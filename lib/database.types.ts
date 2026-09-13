@@ -12,6 +12,41 @@ export type Database = {
   };
   public: {
     Tables: {
+      question_thoughts: {
+        Row: {
+          body: string;
+          created_at: string;
+          id: number;
+          question_id: number;
+          status: Database['public']['Enums']['question_thought_status'];
+          updated_at: string;
+        };
+        Insert: {
+          body: string;
+          created_at?: string;
+          id?: never;
+          question_id: number;
+          status?: Database['public']['Enums']['question_thought_status'];
+          updated_at?: string;
+        };
+        Update: {
+          body?: string;
+          created_at?: string;
+          id?: never;
+          question_id?: number;
+          status?: Database['public']['Enums']['question_thought_status'];
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: 'question_thoughts_question_id_fkey';
+            columns: ['question_id'];
+            isOneToOne: false;
+            referencedRelation: 'questions';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
       questions: {
         Row: {
           answer: string | null;
@@ -71,6 +106,7 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      is_everstage_user: { Args: never; Returns: boolean };
       vote_question: {
         Args: { p_direction: string; p_question_id: number };
         Returns: { dislikes: number; upvotes: number }[];
@@ -83,6 +119,7 @@ export type Database = {
         | 'Assigned'
         | 'Answered'
         | 'Closed';
+      question_thought_status: 'published' | 'hidden';
       question_visibility: 'anonymous' | 'named';
     };
     CompositeTypes: {
@@ -92,4 +129,9 @@ export type Database = {
 };
 
 export type QuestionRow = Database['public']['Tables']['questions']['Row'];
-export type QuestionInsert = Database['public']['Tables']['questions']['Insert'];
+export type QuestionInsert =
+  Database['public']['Tables']['questions']['Insert'];
+export type QuestionThoughtRow =
+  Database['public']['Tables']['question_thoughts']['Row'];
+export type QuestionThoughtInsert =
+  Database['public']['Tables']['question_thoughts']['Insert'];
