@@ -13,7 +13,10 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? 'http://localhost:3002'),
+  metadataBase: new URL(
+    process.env.NEXT_PUBLIC_SITE_URL ??
+      'https://unask-anonymous-feedback.everstage-in-8623.chatgpt.site',
+  ),
   title: 'Anonymous Feedback — Speak freely',
   description: 'A private space to share workplace feedback without revealing who said it.',
   openGraph: {
