@@ -216,6 +216,40 @@
   font-size: 13px;
   line-height: 1.65;
 }
+.auth-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 28px;
+}
+.auth-form label {
+  color: var(--ink);
+  font-size: 10px;
+  font-weight: 750;
+}
+.auth-form input {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  font-size: 12px;
+  outline: none;
+}
+.auth-form input:focus {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px var(--teal-soft);
+}
+.auth-form [data-slot='button'] {
+  width: 100%;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+.auth-error {
+  color: #8d3e2c;
+  font-size: 10px;
+  line-height: 1.5;
+}
 .google-button {
   width: 100%;
   display: grid;

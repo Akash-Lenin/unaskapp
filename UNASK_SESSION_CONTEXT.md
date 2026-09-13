@@ -24,7 +24,7 @@ The experience demonstrates three roles:
 - **HR Admin:** reviews open questions, sees engagement signals, categorizes questions, and assigns them to an appropriate responder without access to sender identity.
 - **Responder:** sees only assigned questions and publishes official answers to the employee feed.
 
-The employee feed, anonymous question submission, and voting are now connected to Supabase project `kykvxhbinrduankuvplm`. The HR and responder screens remain role-preview UI until production SSO issues trusted staff claims. Audit controls and a complete production anonymity architecture are still future work.
+The employee feed, anonymous question submission, and voting are connected to Supabase project `kykvxhbinrduankuvplm`. Access now requires a verified Supabase Auth session for an exact `@everstage.com` email, enforced again by database RLS. Feedback records contain no email or employee ID. The HR and responder screens remain role-preview UI until production SSO issues trusted staff claims.
 
 ## Current User Experience
 
@@ -159,6 +159,9 @@ Question records currently include:
 8. Fixed all Supabase security-advisor findings.
 9. Connected the React employee feed, submission flow, and voting to Supabase.
 10. Updated the canonical metadata origin to the Railway deployment.
+11. Replaced the simulated login with passwordless email verification.
+12. Enforced the Everstage email domain in both the client gate and database RLS.
+13. Switched anonymous thread secrets to client-generated SHA-256 hashes; raw recovery keys remain only in the browser tab.
 
 ## Deployment
 
@@ -194,7 +197,7 @@ The Sites source branch contains the final commit.
 
 - Employee submissions and votes persist in Supabase; HR/responder preview actions are still local-only.
 - Role switching is a demonstration control, not authentication. Database staff writes require trusted `app_metadata.unask_role` claims and responder assignments.
-- SSO is described in the UI but is not implemented.
+- Passwordless Supabase Auth is implemented. Company-wide email delivery still requires custom SMTP and the Railway origin in Supabase Auth URL Configuration.
 - Anonymous submission rows do not store employee identity, and public database access excludes private thread fields. The complete anonymity threat model still needs formal review.
 - There is no moderation queue persistence, audit log, rate limiting, abuse prevention, notification system, or analytics pipeline.
 - The privacy phrase detection is regex-based and intentionally lightweight.

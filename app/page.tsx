@@ -36,6 +36,7 @@ type Status =
   | 'Answered'
   | 'Closed';
 type Visibility = 'anonymous' | 'named';
+type AuthState = 'checking' | 'signin' | 'sent' | 'denied' | 'app';
 type Question = {
   id: number;
   question: string;
@@ -121,6 +122,18 @@ function randomToken(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
 }
 
+function isEverstageEmail(value: string | undefined) {
+  return /^[^@\\s]+@everstage\\.com$/i.test(value ?? '');
+}
+
+async function hashToken(value: string) {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
 function questionReference(question: Question) {
   return question.threadKey
     ? `AF-${question.threadKey.slice(-6).toUpperCase()}`
@@ -156,9 +169,10 @@ function rowToQuestion(row: PublicQuestionRow): Question {
 }
 
 export default function HomePage() {
-  const [auth, setAuth] = useState<'signin' | 'accepted' | 'denied' | 'app'>(
-    'signin',
-  );
+  const [auth, setAuth] = useState<AuthState>('checking');
+  const [email, setEmail] = useState('');
+  const [authPending, setAuthPending] = useState(false);
+  const [authError, setAuthError] = useState('');
   const [sessionId, setSessionId] = useState('');
   const [role, setRole] = useState<Role>('employee');
   const [questions, setQuestions] = useState(seed);
@@ -180,6 +194,40 @@ export default function HomePage() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
+    const applySession = (sessionEmail: string | undefined) => {
+      if (isEverstageEmail(sessionEmail)) {
+        setSessionId((current) => current || randomToken('ses'));
+        setAuth('app');
+        return;
+      }
+
+      if (sessionEmail) {
+        setAuth('denied');
+        void supabase.auth.signOut({ scope: 'local' });
+        return;
+      }
+
+      setAuth((current) =>
+        current === 'sent' || current === 'denied' ? current : 'signin',
+      );
+    };
+
+    void supabase.auth.getSession().then(({ data }) => {
+      applySession(data.session?.user.email);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      applySession(session?.user.email);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (auth !== 'app') return;
+
     const request = supabase
       .from('questions')
       .select(
@@ -205,7 +253,7 @@ export default function HomePage() {
       ]);
       setBackendState('live');
     });
-  }, []);
+  }, [auth]);
 
   const risks = useMemo(
     () =>
@@ -223,26 +271,54 @@ export default function HomePage() {
     window.setTimeout(() => setToast(''), 2600);
   };
 
-  const testLogin = (kind: 'company' | 'personal') => {
-    if (kind === 'personal') {
+  const requestAccess = async (event: SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalizedEmail = email.trim().toLowerCase();
+    setAuthError('');
+
+    if (!isEverstageEmail(normalizedEmail)) {
       setAuth('denied');
       return;
     }
-    setSessionId(randomToken('ses'));
-    setAuth('accepted');
+
+    setAuthPending(true);
+    const { error } = await supabase.auth.signInWithOtp({
+      email: normalizedEmail,
+      options: {
+        shouldCreateUser: true,
+        emailRedirectTo: window.location.origin,
+      },
+    });
+    setAuthPending(false);
+
+    if (error) {
+      setAuthError(
+        error.message === 'Email address not authorized'
+          ? 'Email delivery is not configured for this address yet.'
+          : 'We could not send the sign-in link. Please try again.',
+      );
+      return;
+    }
+
+    setEmail(normalizedEmail);
+    setAuth('sent');
   };
 
-  const signOut = () => {
+  const signOut = async () => {
+    await supabase.auth.signOut({ scope: 'local' });
     setAuth('signin');
+    setEmail('');
     setSessionId('');
     setRole('employee');
+    setBackendState('connecting');
   };
 
   const submitQuestion = async (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!draft.trim() || submitting) return;
     setSubmitting(true);
-    const threadKey = randomToken('thr');
+    const threadKey = `${randomToken('thr')}_${crypto.randomUUID().replaceAll('-', '')}`;
+    const threadHash = await hashToken(threadKey);
     const localId = Date.now();
     const { error } = await supabase.from('questions').insert({
       question: draft.trim(),
@@ -252,7 +328,7 @@ export default function HomePage() {
         visibility === 'named'
           ? displayName.trim() || 'Name entered by author'
           : undefined,
-      thread_key: threadKey,
+      thread_key: threadHash,
     });
 
     if (error) {
@@ -261,6 +337,11 @@ export default function HomePage() {
       notify('The question could not be saved. Please try again.');
       return;
     }
+
+    sessionStorage.setItem(
+      `unask.thread.${threadKey.slice(-6)}`,
+      threadKey,
+    );
 
     const question: Question = {
       id: localId,
@@ -394,10 +475,16 @@ export default function HomePage() {
     return (
       <AuthMock
         state={auth}
-        sessionId={sessionId}
-        testLogin={testLogin}
-        enter={() => setAuth('app')}
-        reset={() => setAuth('signin')}
+        email={email}
+        pending={authPending}
+        error={authError}
+        setEmail={setEmail}
+        requestAccess={requestAccess}
+        reset={() => {
+          setEmail('');
+          setAuthError('');
+          setAuth('signin');
+        }}
       />
     );
 
@@ -483,15 +570,19 @@ function Brand() {
 
 function AuthMock({
   state,
-  sessionId,
-  testLogin,
-  enter,
+  email,
+  pending,
+  error,
+  setEmail,
+  requestAccess,
   reset,
 }: {
-  state: 'signin' | 'accepted' | 'denied';
-  sessionId: string;
-  testLogin: (kind: 'company' | 'personal') => void;
-  enter: () => void;
+  state: Exclude<AuthState, 'app'>;
+  email: string;
+  pending: boolean;
+  error: string;
+  setEmail: (value: string) => void;
+  requestAccess: (event: SyntheticEvent<HTMLFormElement>) => void;
   reset: () => void;
 }) {
   return (
@@ -506,61 +597,64 @@ function AuthMock({
             your question.
           </p>
         </div>
-        <small>Development anonymity test · no real Google login yet</small>
+        <small>
+          Verified company access · identity is separated from feedback
+        </small>
       </section>
       <section className="auth-panel">
+        {state === 'checking' && (
+          <div className="auth-card">
+            <ShieldCheck className="auth-icon" />
+            <p className="eyebrow">Checking access</p>
+            <h2>Restoring your secure session…</h2>
+          </div>
+        )}
         {state === 'signin' && (
           <div className="auth-card">
             <ShieldCheck className="auth-icon" />
-            <p className="eyebrow">Anonymity handoff test</p>
-            <h2>Check who can enter</h2>
+            <p className="eyebrow">Everstage access</p>
+            <h2>Verify your work email</h2>
             <p>
-              Choose a test account. The company account should create an
-              anonymous session. A personal account should be refused.
+              We will email you a one-time sign-in link. Only verified
+              addresses ending in @everstage.com can enter.
             </p>
-            <button
-              className="google-button"
-              onClick={() => testLogin('company')}
-            >
-              <span>G</span>Continue with company account
-              <ArrowRight />
-            </button>
-            <button
-              className="text-button"
-              onClick={() => testLogin('personal')}
-            >
-              Try a personal account
-            </button>
+            <form className="auth-form" onSubmit={requestAccess}>
+              <label htmlFor="work-email">Work email</label>
+              <input
+                id="work-email"
+                type="email"
+                autoComplete="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="you@everstage.com"
+                required
+              />
+              {error && <p className="auth-error">{error}</p>}
+              <Button disabled={pending || !email.trim()}>
+                {pending ? 'Sending…' : 'Email me a sign-in link'}
+                <ArrowRight />
+              </Button>
+            </form>
             <div className="auth-note">
               <LockKeyhole />
-              This screen simulates Google SSO. No password or email is
-              collected.
+              Your email proves company membership. It is never written to a
+              question, vote, or anonymous thread.
             </div>
           </div>
         )}
-        {state === 'accepted' && (
+        {state === 'sent' && (
           <div className="auth-card proof-card">
             <span className="result-icon success">
               <Check />
             </span>
-            <p className="eyebrow">Access confirmed</p>
-            <h2>Identity stopped here.</h2>
-            <div className="proof-list">
-              <ProofRow label="Company domain confirmed" value="Passed" />
-              <ProofRow label="Role resolved" value="Employee" />
-              <ProofRow label="Email in app session" value="Absent" />
-              <ProofRow label="Provider token" value="Discarded" />
-              <ProofRow
-                label="Anonymous session"
-                value={`${sessionId.slice(0, 8)}••••`}
-              />
-            </div>
-            <Button onClick={enter}>
-              Enter Unask
-              <ArrowRight />
-            </Button>
+            <p className="eyebrow">Verification sent</p>
+            <h2>Check your work inbox.</h2>
+            <p>
+              Open the one-time link sent to {email}. You will return here
+              with verified Everstage access.
+            </p>
             <button className="text-button" onClick={reset}>
-              Run another test
+              Use another email
             </button>
           </div>
         )}
@@ -570,8 +664,8 @@ function AuthMock({
             <p className="eyebrow">Access refused</p>
             <h2>This workspace is for Everstage employees.</h2>
             <p>
-              The personal account was rejected before an Unask session was
-              created.
+              Use a verified email address ending exactly in @everstage.com.
+              No application access or feedback data was granted.
             </p>
             <Button variant="outline" onClick={reset}>
               Try another account
@@ -580,18 +674,6 @@ function AuthMock({
         )}
       </section>
     </main>
-  );
-}
-
-function ProofRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <span>
-        <Check />
-        {label}
-      </span>
-      <strong>{value}</strong>
-    </div>
   );
 }
 
@@ -652,8 +734,9 @@ function ProofStrip({
     <div className="proof-strip">
       <ShieldCheck />
       <span>
-        <strong>Anonymity test passed.</strong> Company access confirmed; email
-        is absent from session {sessionId.slice(0, 8)}••••.
+        <strong>Verified Everstage access.</strong> Your email stays at the
+        access gate and is not stored with question session{' '}
+        {sessionId.slice(0, 8)}••••.
       </span>
       <button onClick={close}>Dismiss</button>
     </div>
@@ -762,8 +845,8 @@ function EmployeeView(props: EmployeeProps) {
           </footer>
         </form>
         <p className="editor-footnote">
-          <LockKeyhole />A new private thread is created for this question. It
-          is not linked to your login or other questions.
+          <LockKeyhole />A separate private recovery key stays in this browser
+          tab. The question row contains no email or employee ID.
         </p>
       </section>
       <section className="feed-section">
