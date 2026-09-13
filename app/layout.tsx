@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { Geist, Geist_Mono } from 'next/font/google';
+import { Geist, Geist_Mono, Roboto } from 'next/font/google';
 import './globals.css';
 
 const geistSans = Geist({
@@ -12,13 +12,20 @@ const geistMono = Geist_Mono({
   subsets: ['latin'],
 });
 
+const roboto = Roboto({
+  variable: '--font-roboto',
+  weight: ['400', '500', '600', '700'],
+  subsets: ['latin'],
+});
+
 export const metadata: Metadata = {
   metadataBase: new URL(
     process.env.NEXT_PUBLIC_SITE_URL ??
       'https://unaskapp-production.up.railway.app',
   ),
   title: 'Unask — Speak freely',
-  description: 'A private space to share workplace feedback without revealing who said it.',
+  description:
+    'A private space to share workplace feedback without revealing who said it.',
   openGraph: {
     title: 'Unask',
     description: 'Say what needs to be said.',
@@ -40,7 +47,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${roboto.variable} antialiased`}
       >
         {children}
       </body>
