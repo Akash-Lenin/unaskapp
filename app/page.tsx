@@ -1,67 +1,943 @@
 'use client';
 
-import { FormEvent, useMemo, useState } from 'react';
-import { ArrowRight, Check, ChevronRight, CircleHelp, Clock3, EyeOff, LockKeyhole, MessageCircle, MessagesSquare, Search, Send, ShieldCheck, Sparkles, ThumbsDown, ThumbsUp, UserRoundCheck, UsersRound } from 'lucide-react';
+import { type SyntheticEvent, useMemo, useState } from 'react';
+import {
+  ArrowRight,
+  Check,
+  ChevronRight,
+  CircleHelp,
+  EyeOff,
+  LockKeyhole,
+  LogOut,
+  MessageCircle,
+  Search,
+  Send,
+  ShieldCheck,
+  Sparkles,
+  ThumbsDown,
+  ThumbsUp,
+  UserRoundCheck,
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 
 type Role = 'employee' | 'hr' | 'responder';
-type Status = 'Under review' | 'Assigned' | 'Answered';
-type Question = { id:number; question:string; context:string; category:string; status:Status; age:string; upvotes:number; dislikes:number; thoughts:number; responder?:string; answer?:string };
+type Status =
+  | 'Under review'
+  | 'Needs clarification'
+  | 'Assigned'
+  | 'Answered'
+  | 'Closed';
+type Visibility = 'anonymous' | 'named';
+type Question = {
+  id: number;
+  question: string;
+  detail: string;
+  status: Status;
+  age: string;
+  upvotes: number;
+  dislikes: number;
+  comments: number;
+  responder?: string;
+  answer?: string;
+  privateReply?: string;
+  owned?: boolean;
+  displayName?: string;
+  threadKey?: string;
+};
 
 const seed: Question[] = [
-  { id:2841, question:'Can we make promotion criteria and review timelines consistent across teams?', context:'The process feels dependent on how each manager explains it. A visible framework would make career conversations more equitable.', category:'Career growth', status:'Assigned', age:'18 min ago', upvotes:42, dislikes:3, thoughts:8, responder:'Maya · People Leadership' },
-  { id:2836, question:'What was the reasoning behind the latest territory changes?', context:'It would help to understand how the structure improves customer coverage and how success will be measured.', category:'Ways of working', status:'Answered', age:'Yesterday', upvotes:31, dislikes:5, thoughts:6, responder:'Arjun · Revenue Operations', answer:'We changed territories to reduce account overlap and create clearer ownership. We will review coverage, response time and pipeline quality after the first 60 days.' },
-  { id:2829, question:'How can behind-the-scenes work be recognised more consistently?', context:'Research, enablement and operational work happens before a deal closes, but it is rarely visible in recognition programmes.', category:'Recognition', status:'Under review', age:'2 days ago', upvotes:27, dislikes:2, thoughts:11 },
-  { id:2822, question:'Could we publish one reliable source for pricing and competitor guidance?', context:'Different documents are circulating and it is difficult to know which guidance is current.', category:'Enablement', status:'Answered', age:'5 days ago', upvotes:19, dislikes:1, thoughts:4, responder:'Leena · Enablement', answer:'Yes. A central enablement hub is being reviewed now and will replace the existing team folders next month.' },
+  {
+    id: 2841,
+    question:
+      'Can promotion criteria and review timelines be consistent across teams?',
+    detail:
+      'The process feels dependent on how each manager explains it. A visible framework would make career conversations more equitable.',
+    status: 'Assigned',
+    age: '18 min ago',
+    upvotes: 42,
+    dislikes: 3,
+    comments: 8,
+    responder: 'Maya · People Leadership',
+  },
+  {
+    id: 2836,
+    question: 'What was the reasoning behind the latest territory changes?',
+    detail:
+      'It would help to understand how the structure improves customer coverage and how success will be measured.',
+    status: 'Answered',
+    age: 'Yesterday',
+    upvotes: 31,
+    dislikes: 5,
+    comments: 6,
+    responder: 'Arjun · Revenue Operations',
+    answer:
+      'We changed territories to reduce account overlap and create clearer ownership. We will review coverage, response time, and pipeline quality after the first 60 days.',
+  },
+  {
+    id: 2829,
+    question: 'How can behind-the-scenes work be recognised more consistently?',
+    detail:
+      'Research, enablement, and operational work happens before a deal closes, but it is rarely visible in recognition programmes.',
+    status: 'Under review',
+    age: '2 days ago',
+    upvotes: 27,
+    dislikes: 2,
+    comments: 11,
+  },
 ];
-const categories = ['Career growth','Ways of working','Recognition','Enablement'];
-const people = ['Maya · People Leadership','Arjun · Revenue Operations','Leena · Enablement'];
-const roles: Record<Role,{label:string; icon:typeof MessagesSquare}> = {
-  employee:{label:'Employee',icon:MessagesSquare}, hr:{label:'HR Admin',icon:ShieldCheck}, responder:{label:'Responder',icon:UserRoundCheck},
+
+const responders = [
+  'Maya · People Leadership',
+  'Arjun · Revenue Operations',
+  'Leena · Enablement',
+];
+const identityPatterns: Array<[RegExp, string]> = [
+  [
+    /(only person|only one|my manager|my skip)/gi,
+    'A unique role or reporting line may identify you.',
+  ],
+  [
+    /(when I joined|last week I|on my first day)/gi,
+    'A precise event may be matched to internal records.',
+  ],
+  [
+    /(india|emea|apac|seattle|bangalore) team/gi,
+    'A small regional team may narrow down who you are.',
+  ],
+];
+
+function randomToken(prefix: string) {
+  return `${prefix}_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
+}
+
+export default function HomePage() {
+  const [auth, setAuth] = useState<'signin' | 'accepted' | 'denied' | 'app'>(
+    'signin',
+  );
+  const [sessionId, setSessionId] = useState('');
+  const [role, setRole] = useState<Role>('employee');
+  const [questions, setQuestions] = useState(seed);
+  const [selectedId, setSelectedId] = useState(2829);
+  const [draft, setDraft] = useState('');
+  const [detail, setDetail] = useState('');
+  const [visibility, setVisibility] = useState<Visibility>('anonymous');
+  const [displayName, setDisplayName] = useState('');
+  const [search, setSearch] = useState('');
+  const [answer, setAnswer] = useState('');
+  const [privateReply, setPrivateReply] = useState('');
+  const [responder, setResponder] = useState(responders[0]);
+  const [expandedId, setExpandedId] = useState<number | null>(2836);
+  const [toast, setToast] = useState('');
+  const [showProof, setShowProof] = useState(true);
+
+  const risks = useMemo(
+    () =>
+      identityPatterns.flatMap(([pattern, warning]) => {
+        pattern.lastIndex = 0;
+        return pattern.test(`${draft} ${detail}`) ? [warning] : [];
+      }),
+    [draft, detail],
+  );
+
+  const selected =
+    questions.find((question) => question.id === selectedId) ?? questions[0];
+  const notify = (message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(''), 2600);
+  };
+
+  const testLogin = (kind: 'company' | 'personal') => {
+    if (kind === 'personal') {
+      setAuth('denied');
+      return;
+    }
+    setSessionId(randomToken('ses'));
+    setAuth('accepted');
+  };
+
+  const signOut = () => {
+    setAuth('signin');
+    setSessionId('');
+    setRole('employee');
+  };
+
+  const submitQuestion = (event: SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!draft.trim()) return;
+    const question: Question = {
+      id: Math.max(...questions.map((item) => item.id)) + 1,
+      question: draft.trim(),
+      detail: detail.trim() || 'No additional context was added.',
+      status: 'Under review',
+      age: 'Just now',
+      upvotes: 0,
+      dislikes: 0,
+      comments: 0,
+      owned: true,
+      displayName:
+        visibility === 'named'
+          ? displayName.trim() || 'Name entered by author'
+          : undefined,
+      threadKey: randomToken('thr'),
+    };
+    setQuestions((current) => [question, ...current]);
+    setSelectedId(question.id);
+    setExpandedId(question.id);
+    setDraft('');
+    setDetail('');
+    setDisplayName('');
+    setVisibility('anonymous');
+    notify(`Question AF-${question.id} entered the private HR queue.`);
+  };
+
+  const vote = (id: number, direction: 'up' | 'down') =>
+    setQuestions((current) =>
+      current.map((question) =>
+        question.id === id
+          ? {
+              ...question,
+              upvotes: question.upvotes + (direction === 'up' ? 1 : 0),
+              dislikes: question.dislikes + (direction === 'down' ? 1 : 0),
+            }
+          : question,
+      ),
+    );
+
+  const requestClarification = () => {
+    if (!privateReply.trim()) return;
+    setQuestions((current) =>
+      current.map((question) =>
+        question.id === selected.id
+          ? {
+              ...question,
+              status: 'Needs clarification',
+              privateReply: privateReply.trim(),
+            }
+          : question,
+      ),
+    );
+    setPrivateReply('');
+    notify('Private clarification sent through the anonymous thread.');
+  };
+
+  const closeQuestion = () => {
+    setQuestions((current) =>
+      current.map((question) =>
+        question.id === selected.id
+          ? { ...question, status: 'Closed' }
+          : question,
+      ),
+    );
+    notify('Question closed privately.');
+  };
+
+  const approveAndAssign = () => {
+    setQuestions((current) =>
+      current.map((question) =>
+        question.id === selected.id
+          ? { ...question, status: 'Assigned', responder }
+          : question,
+      ),
+    );
+    notify(`Approved and assigned to ${responder.split(' · ')[0]}.`);
+  };
+
+  const publishAnswer = (id: number) => {
+    if (!answer.trim()) return;
+    setQuestions((current) =>
+      current.map((question) =>
+        question.id === id
+          ? { ...question, status: 'Answered', answer: answer.trim() }
+          : question,
+      ),
+    );
+    setAnswer('');
+    notify('Answer published to the employee feed.');
+  };
+
+  if (auth !== 'app')
+    return (
+      <AuthMock
+        state={auth}
+        sessionId={sessionId}
+        testLogin={testLogin}
+        enter={() => setAuth('app')}
+        reset={() => setAuth('signin')}
+      />
+    );
+
+  return (
+    <main className="unask-app">
+      <Header
+        role={role}
+        setRole={setRole}
+        sessionId={sessionId}
+        signOut={signOut}
+      />
+      {showProof && (
+        <ProofStrip sessionId={sessionId} close={() => setShowProof(false)} />
+      )}
+      {role === 'employee' && (
+        <EmployeeView
+          questions={questions}
+          draft={draft}
+          detail={detail}
+          visibility={visibility}
+          displayName={displayName}
+          search={search}
+          risks={risks}
+          expandedId={expandedId}
+          setDraft={setDraft}
+          setDetail={setDetail}
+          setVisibility={setVisibility}
+          setDisplayName={setDisplayName}
+          setSearch={setSearch}
+          setExpandedId={setExpandedId}
+          submit={submitQuestion}
+          vote={vote}
+        />
+      )}
+      {role === 'hr' && (
+        <HrView
+          questions={questions}
+          selected={selected}
+          selectedId={selectedId}
+          privateReply={privateReply}
+          responder={responder}
+          setSelectedId={setSelectedId}
+          setPrivateReply={setPrivateReply}
+          setResponder={setResponder}
+          requestClarification={requestClarification}
+          closeQuestion={closeQuestion}
+          approveAndAssign={approveAndAssign}
+        />
+      )}
+      {role === 'responder' && (
+        <ResponderView
+          questions={questions}
+          selected={selected}
+          selectedId={selectedId}
+          answer={answer}
+          setSelectedId={setSelectedId}
+          setAnswer={setAnswer}
+          publishAnswer={publishAnswer}
+        />
+      )}
+      {toast && (
+        <div className="toast">
+          <Check />
+          {toast}
+        </div>
+      )}
+    </main>
+  );
+}
+
+function Brand() {
+  return (
+    <div className="brand">
+      <span>
+        <Sparkles />
+      </span>
+      <strong>Unask</strong>
+    </div>
+  );
+}
+
+function AuthMock({
+  state,
+  sessionId,
+  testLogin,
+  enter,
+  reset,
+}: {
+  state: 'signin' | 'accepted' | 'denied';
+  sessionId: string;
+  testLogin: (kind: 'company' | 'personal') => void;
+  enter: () => void;
+  reset: () => void;
+}) {
+  return (
+    <main className="auth-screen">
+      <section className="auth-promise">
+        <Brand />
+        <div>
+          <p className="eyebrow">A private place for difficult questions</p>
+          <h1>Ask without being known.</h1>
+          <p>
+            Your login proves that you belong here. It does not become part of
+            your question.
+          </p>
+        </div>
+        <small>Development anonymity test · no real Google login yet</small>
+      </section>
+      <section className="auth-panel">
+        {state === 'signin' && (
+          <div className="auth-card">
+            <ShieldCheck className="auth-icon" />
+            <p className="eyebrow">Anonymity handoff test</p>
+            <h2>Check who can enter</h2>
+            <p>
+              Choose a test account. The company account should create an
+              anonymous session. A personal account should be refused.
+            </p>
+            <button
+              className="google-button"
+              onClick={() => testLogin('company')}
+            >
+              <span>G</span>Continue with company account
+              <ArrowRight />
+            </button>
+            <button
+              className="text-button"
+              onClick={() => testLogin('personal')}
+            >
+              Try a personal account
+            </button>
+            <div className="auth-note">
+              <LockKeyhole />
+              This screen simulates Google SSO. No password or email is
+              collected.
+            </div>
+          </div>
+        )}
+        {state === 'accepted' && (
+          <div className="auth-card proof-card">
+            <span className="result-icon success">
+              <Check />
+            </span>
+            <p className="eyebrow">Access confirmed</p>
+            <h2>Identity stopped here.</h2>
+            <div className="proof-list">
+              <ProofRow label="Company domain confirmed" value="Passed" />
+              <ProofRow label="Role resolved" value="Employee" />
+              <ProofRow label="Email in app session" value="Absent" />
+              <ProofRow label="Provider token" value="Discarded" />
+              <ProofRow
+                label="Anonymous session"
+                value={`${sessionId.slice(0, 8)}••••`}
+              />
+            </div>
+            <Button onClick={enter}>
+              Enter Unask
+              <ArrowRight />
+            </Button>
+            <button className="text-button" onClick={reset}>
+              Run another test
+            </button>
+          </div>
+        )}
+        {state === 'denied' && (
+          <div className="auth-card proof-card">
+            <span className="result-icon denied">×</span>
+            <p className="eyebrow">Access refused</p>
+            <h2>This workspace is for Everstage employees.</h2>
+            <p>
+              The personal account was rejected before an Unask session was
+              created.
+            </p>
+            <Button variant="outline" onClick={reset}>
+              Try another account
+            </Button>
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function ProofRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <span>
+        <Check />
+        {label}
+      </span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function Header({
+  role,
+  setRole,
+  sessionId,
+  signOut,
+}: {
+  role: Role;
+  setRole: (role: Role) => void;
+  sessionId: string;
+  signOut: () => void;
+}) {
+  return (
+    <header className="unask-header">
+      <Brand />
+      <div className="prototype-role">
+        <label htmlFor="prototype-role">Prototype view</label>
+        <select
+          id="prototype-role"
+          value={role}
+          onChange={(event) => setRole(event.target.value as Role)}
+        >
+          <option value="employee">Employee</option>
+          <option value="hr">HR Admin</option>
+          <option value="responder">Responder</option>
+        </select>
+      </div>
+      <div className="session-state">
+        <EyeOff />
+        <span>Anonymous session {sessionId.slice(-4)}</span>
+        <button onClick={signOut} aria-label="End test session">
+          <LogOut />
+        </button>
+      </div>
+    </header>
+  );
+}
+
+function ProofStrip({
+  sessionId,
+  close,
+}: {
+  sessionId: string;
+  close: () => void;
+}) {
+  return (
+    <div className="proof-strip">
+      <ShieldCheck />
+      <span>
+        <strong>Anonymity test passed.</strong> Company access confirmed; email
+        is absent from session {sessionId.slice(0, 8)}••••.
+      </span>
+      <button onClick={close}>Dismiss</button>
+    </div>
+  );
+}
+
+type EmployeeProps = {
+  questions: Question[];
+  draft: string;
+  detail: string;
+  visibility: Visibility;
+  displayName: string;
+  search: string;
+  risks: string[];
+  expandedId: number | null;
+  setDraft: (value: string) => void;
+  setDetail: (value: string) => void;
+  setVisibility: (value: Visibility) => void;
+  setDisplayName: (value: string) => void;
+  setSearch: (value: string) => void;
+  setExpandedId: (value: number | null) => void;
+  submit: (event: SyntheticEvent<HTMLFormElement>) => void;
+  vote: (id: number, direction: 'up' | 'down') => void;
 };
-const patterns: Array<[RegExp,string]> = [[/only (person|one|woman|man|rep|ic)/gi,'This may describe a group of one.'],[/(my manager|my skip|my lead)/gi,'A reporting line may narrow down who you are.'],[/(last week I|when I joined|on my first day)/gi,'A precise event can be matched to records.'],[/(india|emea|apac|seattle|bangalore team)/gi,'A small regional group may identify you.']];
 
-export default function HomePage(){
-  const [role,setRole]=useState<Role>('employee'); const [questions,setQuestions]=useState(seed); const [selectedId,setSelectedId]=useState(2841);
-  const [composer,setComposer]=useState(false); const [draft,setDraft]=useState(''); const [category,setCategory]=useState(categories[0]);
-  const [thought,setThought]=useState(''); const [answer,setAnswer]=useState(''); const [filter,setFilter]=useState<'All'|'Open'|'Answered'>('All');
-  const [search,setSearch]=useState(''); const [voted,setVoted]=useState<Record<number,'up'|'down'>>({}); const [toast,setToast]=useState('');
-  const selected=questions.find(q=>q.id===selectedId)??questions[0];
-  const risks=useMemo(()=>patterns.flatMap(([regex,reason])=>{regex.lastIndex=0;return Array.from(draft.matchAll(regex)).map(m=>({phrase:m[0],reason}))}),[draft]);
-  const notify=(message:string)=>{setToast(message);window.setTimeout(()=>setToast(''),2400)};
-  const vote=(id:number,next:'up'|'down')=>{setQuestions(current=>current.map(q=>q.id!==id?q:{...q,upvotes:q.upvotes+(next==='up'?1:0)-(voted[id]==='up'?1:0),dislikes:q.dislikes+(next==='down'?1:0)-(voted[id]==='down'?1:0)}));setVoted(current=>({...current,[id]:next}))};
-  const submit=()=>{if(!draft.trim())return;const q:Question={id:Math.max(...questions.map(x=>x.id))+1,question:draft.trim(),context:'Submitted anonymously and awaiting HR review.',category,status:'Under review',age:'Just now',upvotes:0,dislikes:0,thoughts:0};setQuestions(current=>[q,...current]);setDraft('');setComposer(false);notify('Question submitted without your identity.')};
-  const addThought=(e:FormEvent)=>{e.preventDefault();if(!thought.trim())return;setQuestions(current=>current.map(q=>q.id===selected.id?{...q,thoughts:q.thoughts+1}:q));setThought('');notify('Your thought was added anonymously.')};
-  const assign=(person:string)=>{setQuestions(current=>current.map(q=>q.id===selected.id?{...q,status:'Assigned',responder:person}:q));notify(`Assigned securely to ${person.split(' · ')[0]}.`)};
-  const publish=()=>{if(!answer.trim())return;setQuestions(current=>current.map(q=>q.id===selected.id?{...q,status:'Answered',answer:answer.trim(),responder:'Maya · People Leadership'}:q));setAnswer('');notify('Answer published to the shared feed.')};
-  return <main className="paper-app access-app min-h-screen"><Header role={role} setRole={setRole}/>
-    {role==='employee'&&<Employee questions={questions} selected={selected} setSelectedId={setSelectedId} filter={filter} setFilter={setFilter} search={search} setSearch={setSearch} voted={voted} vote={vote} open={()=>setComposer(true)} thought={thought} setThought={setThought} addThought={addThought}/>} 
-    {role==='hr'&&<Hr questions={questions} selected={selected} setSelectedId={setSelectedId} assign={assign}/>} 
-    {role==='responder'&&<Responder questions={questions} selected={selected} setSelectedId={setSelectedId} answer={answer} setAnswer={setAnswer} publish={publish}/>} 
-    {composer&&<Composer draft={draft} setDraft={setDraft} category={category} setCategory={setCategory} risks={risks} close={()=>setComposer(false)} submit={submit}/>} 
-    {toast&&<div className="paper-toast"><Check/>{toast}</div>}
-  </main>
+function EmployeeView(props: EmployeeProps) {
+  const visible = props.questions.filter(
+    (question) =>
+      (question.status === 'Assigned' ||
+        question.status === 'Answered' ||
+        question.owned) &&
+      `${question.question} ${question.detail}`
+        .toLowerCase()
+        .includes(props.search.toLowerCase()),
+  );
+  return (
+    <div className="employee-page page-shell">
+      <section className="ask-section">
+        <div className="ask-heading">
+          <div>
+            <p className="eyebrow">Employee</p>
+            <h1>What do you want to ask?</h1>
+          </div>
+          <div className="quiet-promise">
+            <EyeOff />
+            <span>
+              <strong>Your identity is not attached.</strong> HR receives only
+              what you write below.
+            </span>
+          </div>
+        </div>
+        <form className="editor" onSubmit={props.submit}>
+          <Textarea
+            value={props.draft}
+            onChange={(event) => props.setDraft(event.target.value)}
+            placeholder="Ask the question you would ask if nobody knew it came from you…"
+            aria-label="Your question"
+          />
+          <Textarea
+            className="context-input"
+            value={props.detail}
+            onChange={(event) => props.setDetail(event.target.value)}
+            placeholder="Add context if it helps (optional)"
+            aria-label="Optional context"
+          />
+          {props.risks.length > 0 && (
+            <div className="risk-warning">
+              <CircleHelp />
+              <span>
+                <strong>Before you send:</strong> {props.risks.join(' ')}
+              </span>
+            </div>
+          )}
+          <footer>
+            <div className="visibility-choice">
+              <span>Show this as</span>
+              <button
+                type="button"
+                className={props.visibility === 'anonymous' ? 'active' : ''}
+                onClick={() => props.setVisibility('anonymous')}
+              >
+                Anonymous
+              </button>
+              <button
+                type="button"
+                className={props.visibility === 'named' ? 'active' : ''}
+                onClick={() => props.setVisibility('named')}
+              >
+                With a name
+              </button>
+            </div>
+            {props.visibility === 'named' && (
+              <input
+                className="name-input"
+                value={props.displayName}
+                onChange={(event) => props.setDisplayName(event.target.value)}
+                placeholder="Enter a display name"
+                aria-label="Display name"
+              />
+            )}
+            <Button disabled={!props.draft.trim()}>
+              Send to HR
+              <ArrowRight />
+            </Button>
+          </footer>
+        </form>
+        <p className="editor-footnote">
+          <LockKeyhole />A new private thread is created for this question. It
+          is not linked to your login or other questions.
+        </p>
+      </section>
+      <section className="feed-section">
+        <div className="feed-heading">
+          <div>
+            <p className="eyebrow">Shared questions</p>
+            <h2>See what has already been asked.</h2>
+          </div>
+          <label className="search-box">
+            <Search />
+            <input
+              value={props.search}
+              onChange={(event) => props.setSearch(event.target.value)}
+              placeholder="Search questions"
+            />
+          </label>
+        </div>
+        <div className="simple-feed">
+          {visible.map((question) => (
+            <QuestionRow
+              key={question.id}
+              question={question}
+              expanded={props.expandedId === question.id}
+              toggle={() =>
+                props.setExpandedId(
+                  props.expandedId === question.id ? null : question.id,
+                )
+              }
+              vote={props.vote}
+            />
+          ))}
+        </div>
+      </section>
+    </div>
+  );
 }
 
-function Brand(){return <div className="brand"><span className="brand-mark"><Sparkles/></span><span>Anonymous Feedback</span></div>}
-function Header({role,setRole}:{role:Role;setRole:(r:Role)=>void}){return <header className="paper-header access-header"><div className="header-inner"><Brand/><div className="role-preview"><span>Preview as</span>{(Object.keys(roles) as Role[]).map(id=>{const Icon=roles[id].icon;return <button key={id} className={role===id?'active':''} onClick={()=>setRole(id)}><Icon/>{roles[id].label}</button>})}</div><div className="anonymous-badge"><ShieldCheck/>Identity protected</div></div><div className="access-strip"><LockKeyhole/>In production, SSO confirms access and assigns this role. Identity is never attached to feedback.</div></header>}
-function Permissions({items,blocked}:{items:string[];blocked:string}){return <div className="permission-line"><b>This role can</b>{items.map(x=><span key={x}><Check/>{x}</span>)}<span className="permission-blocked"><LockKeyhole/>{blocked}</span></div>}
-function StatusPill({status}:{status:Status}){return <span className={`note-status status-${status.toLowerCase().replace(' ','-')}`}>{status}</span>}
-
-function Employee({questions,selected,setSelectedId,filter,setFilter,search,setSearch,voted,vote,open,thought,setThought,addThought}:{questions:Question[];selected:Question;setSelectedId:(id:number)=>void;filter:'All'|'Open'|'Answered';setFilter:(x:'All'|'Open'|'Answered')=>void;search:string;setSearch:(x:string)=>void;voted:Record<number,'up'|'down'>;vote:(id:number,v:'up'|'down')=>void;open:()=>void;thought:string;setThought:(x:string)=>void;addThought:(e:FormEvent)=>void}){
-  const visible=questions.filter(q=>(filter==='All'||(filter==='Open'?q.status!=='Answered':q.status==='Answered'))&&`${q.question} ${q.category}`.toLowerCase().includes(search.toLowerCase()));
-  return <div className="access-page page-wrap"><section className="role-intro employee-intro"><div><p className="orientation-label">Employee space</p><h1>Ask what others are thinking.</h1><p>Raise a question anonymously, support what matters, and follow the response in one shared space.</p></div><Button onClick={open}><CircleHelp/>Raise an anonymous question</Button></section>
-  <Permissions items={['Create anonymous questions','Vote and add thoughts','See published answers']} blocked="Cannot assign or answer"/>
-  <div className="feed-toolbar"><div className="paper-search"><Search/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search questions"/></div><div className="paper-filters">{(['All','Open','Answered'] as const).map(x=><button key={x} className={filter===x?'active':''} onClick={()=>setFilter(x)}>{x}</button>)}</div></div>
-  <div className="employee-layout"><section className="question-feed"><div className="section-kicker"><span>{visible.length} questions</span><small>Most supported first</small></div>{visible.map(q=><article key={q.id} className={selected.id===q.id?'question-card selected':'question-card'} onClick={()=>setSelectedId(q.id)}><div className="vote-rail"><button className={voted[q.id]==='up'?'active':''} onClick={e=>{e.stopPropagation();vote(q.id,'up')}}><ThumbsUp/></button><strong>{q.upvotes}</strong><button className={voted[q.id]==='down'?'active down':''} onClick={e=>{e.stopPropagation();vote(q.id,'down')}}><ThumbsDown/></button></div><div className="question-body"><div className="question-meta"><StatusPill status={q.status}/><span>{q.category}</span><i/><span>{q.age}</span></div><h2>{q.question}</h2><p>{q.context}</p><footer><span><MessageCircle/>{q.thoughts} thoughts</span>{q.responder&&<span><UserRoundCheck/>{q.responder}</span>}</footer></div><ChevronRight className="question-chevron"/></article>)}</section>
-  <aside className="thread-preview"><p className="orientation-label">Selected question</p><h2>{selected.question}</h2>{selected.answer?<div className="published-answer"><UserRoundCheck/><div><small>Official answer · {selected.responder}</small><p>{selected.answer}</p></div></div>:<div className="awaiting-answer"><Clock3/><p><strong>{selected.status}</strong>{selected.responder?`${selected.responder} is preparing a response.`:'HR is reviewing this before assignment.'}</p></div>}<form className="thought-form" onSubmit={addThought}><label htmlFor="thought">Add a thought anonymously</label><Textarea id="thought" value={thought} onChange={e=>setThought(e.target.value)} placeholder="Add context without revealing who you are…"/><div><span><EyeOff/>No author information is shared</span><Button disabled={!thought.trim()}>Add thought</Button></div></form></aside></div></div>
+function QuestionRow({
+  question,
+  expanded,
+  toggle,
+  vote,
+}: {
+  question: Question;
+  expanded: boolean;
+  toggle: () => void;
+  vote: (id: number, direction: 'up' | 'down') => void;
+}) {
+  return (
+    <article className={`question-row ${expanded ? 'expanded' : ''}`}>
+      <button className="question-main" onClick={toggle}>
+        <div>
+          <span
+            className={`status status-${question.status.toLowerCase().replaceAll(' ', '-')}`}
+          >
+            {question.status}
+          </span>
+          {question.owned && (
+            <span className="your-question">Your question</span>
+          )}
+        </div>
+        <h3>{question.question}</h3>
+        <p>
+          {question.displayName
+            ? `${question.displayName} · name entered by author`
+            : 'Anonymous'}{' '}
+          · {question.age}
+        </p>
+        <ChevronRight />
+      </button>
+      {expanded && (
+        <div className="question-detail">
+          <p>{question.detail}</p>
+          {question.privateReply && (
+            <div className="private-reply">
+              <LockKeyhole />
+              <span>
+                <strong>Private note from HR</strong>
+                {question.privateReply}
+              </span>
+            </div>
+          )}
+          {question.answer && (
+            <div className="answer-block">
+              <UserRoundCheck />
+              <span>
+                <strong>Official answer · {question.responder}</strong>
+                {question.answer}
+              </span>
+            </div>
+          )}
+          <footer>
+            <button onClick={() => vote(question.id, 'up')}>
+              <ThumbsUp />
+              {question.upvotes}
+            </button>
+            <button onClick={() => vote(question.id, 'down')}>
+              <ThumbsDown />
+              {question.dislikes}
+            </button>
+            <span>
+              <MessageCircle />
+              {question.comments} thoughts
+            </span>
+          </footer>
+        </div>
+      )}
+    </article>
+  );
 }
 
-function Hr({questions,selected,setSelectedId,assign}:{questions:Question[];selected:Question;setSelectedId:(id:number)=>void;assign:(p:string)=>void}){const pending=questions.filter(q=>q.status!=='Answered');return <div className="access-page page-wrap"><section className="role-intro"><div><p className="orientation-label">HR admin space</p><h1>Protect the sender. Route the question.</h1><p>Review for safety and relevance, then assign it to the person best placed to answer.</p></div><div className="role-seal"><ShieldCheck/><span><strong>No employee identity available</strong><small>By system design</small></span></div></section><Permissions items={['Review every question','Categorise and assign','Monitor response progress']} blocked="Cannot reveal the sender"/><section className="operations-grid"><Metric value={String(pending.length)} label="Need attention" tone="orange"/><Metric value="6h" label="Median assign time"/><Metric value="84%" label="Answered in 3 days"/><Metric value="3" label="Active responders"/></section><div className="admin-layout"><section className="admin-queue"><PanelTitle eyebrow="Triage queue" title="Questions needing action" count={pending.length}/>{pending.map(q=><button key={q.id} className={selected.id===q.id?'queue-item active':'queue-item'} onClick={()=>setSelectedId(q.id)}><StatusPill status={q.status}/><strong>{q.question}</strong><small>{q.category} · {q.age}</small><ChevronRight/></button>)}</section><section className="assignment-panel"><div className="assignment-head"><div><span>Question AF-{selected.id}</span><h2>{selected.question}</h2></div><StatusPill status={selected.status}/></div><div className="identity-redaction"><EyeOff/><p><strong>Sender identity is not collected here.</strong>You can review the message and engagement, but not who submitted or supported it.</p></div><blockquote>{selected.context}</blockquote><div className="engagement-line"><span><ThumbsUp/>{selected.upvotes} upvotes</span><span><MessageCircle/>{selected.thoughts} thoughts</span><span>{selected.dislikes} dislikes</span></div><div className="field-group"><label>Category</label><div className="category-options">{categories.map(x=><button key={x} className={selected.category===x?'active':''}>{x}</button>)}</div></div><div className="field-group"><label>Assign to the right responder</label><div className="responder-options">{people.map(p=><button key={p} className={selected.responder===p?'active':''} onClick={()=>assign(p)}><span>{p[0]}</span><div><strong>{p.split(' · ')[0]}</strong><small>{p.split(' · ')[1]}</small></div>{selected.responder===p&&<Check/>}</button>)}</div></div><footer><span><LockKeyhole/>Only HR and the responder see assignment details.</span><Button disabled={selected.status==='Assigned'}>{selected.status==='Assigned'?'Assigned':'Assign securely'}<ArrowRight/></Button></footer></section></div></div>}
+type HrProps = {
+  questions: Question[];
+  selected: Question;
+  selectedId: number;
+  privateReply: string;
+  responder: string;
+  setSelectedId: (id: number) => void;
+  setPrivateReply: (value: string) => void;
+  setResponder: (value: string) => void;
+  requestClarification: () => void;
+  closeQuestion: () => void;
+  approveAndAssign: () => void;
+};
+function HrView(props: HrProps) {
+  const queue = props.questions.filter(
+    (question) =>
+      question.status === 'Under review' ||
+      question.status === 'Needs clarification',
+  );
+  return (
+    <div className="workspace-page page-shell">
+      <header className="workspace-heading">
+        <div>
+          <p className="eyebrow">HR moderation</p>
+          <h1>Review, protect, and route.</h1>
+          <p>
+            Identity is unavailable here. Work only with the words the employee
+            submitted.
+          </p>
+        </div>
+        <span>
+          <EyeOff />
+          No sender identity
+        </span>
+      </header>
+      <div className="work-layout">
+        <aside className="work-queue">
+          <header>
+            <strong>Waiting for review</strong>
+            <span>{queue.length}</span>
+          </header>
+          {queue.map((question) => (
+            <button
+              key={question.id}
+              className={props.selectedId === question.id ? 'active' : ''}
+              onClick={() => props.setSelectedId(question.id)}
+            >
+              <span>AF-{question.id}</span>
+              <strong>{question.question}</strong>
+              <small>
+                {question.status} · {question.age}
+              </small>
+            </button>
+          ))}
+        </aside>
+        <section className="work-detail">
+          <div className="record-meta">
+            <span>AF-{props.selected.id}</span>
+            <span
+              className={`status status-${props.selected.status.toLowerCase().replaceAll(' ', '-')}`}
+            >
+              {props.selected.status}
+            </span>
+          </div>
+          <h2>{props.selected.question}</h2>
+          <blockquote>{props.selected.detail}</blockquote>
+          <div className="privacy-boundary">
+            <ShieldCheck />
+            <span>
+              <strong>What HR can see</strong>Question, context, activity, and
+              private thread. No email, employee ID, IP address, or device
+              details.
+            </span>
+          </div>
+          <div className="moderation-section">
+            <label htmlFor="private-reply">Need more information?</label>
+            <Textarea
+              id="private-reply"
+              value={props.privateReply}
+              onChange={(event) => props.setPrivateReply(event.target.value)}
+              placeholder="Ask a private follow-up without learning who sent it…"
+            />
+            <Button
+              variant="outline"
+              disabled={!props.privateReply.trim()}
+              onClick={props.requestClarification}
+            >
+              Send privately
+            </Button>
+          </div>
+          <div className="assignment-row">
+            <label htmlFor="responder">Approve and assign to</label>
+            <select
+              id="responder"
+              value={props.responder}
+              onChange={(event) => props.setResponder(event.target.value)}
+            >
+              {responders.map((item) => (
+                <option key={item}>{item}</option>
+              ))}
+            </select>
+          </div>
+          <footer className="decision-row">
+            <button className="close-action" onClick={props.closeQuestion}>
+              Reject or close
+            </button>
+            <Button onClick={props.approveAndAssign}>
+              Approve and assign
+              <ArrowRight />
+            </Button>
+          </footer>
+        </section>
+      </div>
+    </div>
+  );
+}
 
-function Responder({questions,selected,setSelectedId,answer,setAnswer,publish}:{questions:Question[];selected:Question;setSelectedId:(id:number)=>void;answer:string;setAnswer:(x:string)=>void;publish:()=>void}){const assigned=questions.filter(q=>q.responder?.startsWith('Maya')&&q.status!=='Answered');const effective=assigned.find(q=>q.id===selected.id)??assigned[0]??selected;return <div className="access-page page-wrap"><section className="role-intro"><div><p className="orientation-label">Responder space</p><h1>Give people a clear answer.</h1><p>You only see questions assigned to you. Your response becomes visible in the employee space.</p></div><div className="role-seal teal"><UserRoundCheck/><span><strong>Maya · People Leadership</strong><small>Response access</small></span></div></section><Permissions items={['See assigned questions','Read anonymous thoughts','Publish official answers']} blocked="Cannot browse unassigned questions"/><div className="responder-layout"><section className="assigned-list"><PanelTitle eyebrow="Assigned to you" title="Response queue" count={assigned.length}/>{assigned.length?assigned.map(q=><button key={q.id} className={effective.id===q.id?'queue-item active':'queue-item'} onClick={()=>setSelectedId(q.id)}><span className="due-dot"/><strong>{q.question}</strong><small>{q.category} · assigned today</small><ChevronRight/></button>):<div className="empty-queue"><Check/><strong>You are all caught up</strong><p>New questions appear only after HR assigns them to you.</p></div>}</section><section className="response-editor"><div className="assignment-head"><div><span>Assigned question · AF-{effective.id}</span><h2>{effective.question}</h2></div><StatusPill status={effective.status}/></div><blockquote>{effective.context}</blockquote><div className="anonymous-context"><UsersRound/><p><strong>{effective.upvotes} people support this question.</strong>{effective.thoughts} additional thoughts are grouped as context.</p></div><div className="answer-field"><label htmlFor="answer">Your official answer</label><Textarea id="answer" value={answer} onChange={e=>setAnswer(e.target.value)} placeholder="Explain the decision and what happens next…"/></div><footer><span><Send/>This will be published to all employees.</span><Button disabled={!answer.trim()} onClick={publish}>Publish answer<ArrowRight/></Button></footer></section></div></div>}
-
-function Composer({draft,setDraft,category,setCategory,risks,close,submit}:{draft:string;setDraft:(x:string)=>void;category:string;setCategory:(x:string)=>void;risks:Array<{phrase:string;reason:string}>;close:()=>void;submit:()=>void}){return <div className="composer-overlay" role="dialog" aria-modal="true"><button className="overlay-dismiss" onClick={close}/><section className="question-composer"><header><div><p className="orientation-label">Anonymous submission</p><h2>Raise a question</h2></div><button onClick={close}>×</button></header><p className="composer-guidance">Ask one clear question. HR reviews it, assigns it, and publishes the answer to the shared feed.</p><label htmlFor="draft">Your question</label><Textarea id="draft" autoFocus value={draft} onChange={e=>setDraft(e.target.value)} placeholder="What would you like management to answer?"/><div className="field-group"><label>Topic</label><div className="category-options">{categories.map(x=><button key={x} className={category===x?'active':''} onClick={()=>setCategory(x)}>{x}</button>)}</div></div><div className={risks.length?'composer-privacy warning':'composer-privacy'}>{risks.length?<EyeOff/>:<ShieldCheck/>}<div><strong>{risks.length?'Consider removing identifying details':'No obvious identifying details found'}</strong><p>{risks.length?risks.map(r=>`“${r.phrase}” — ${r.reason}`).join(' '):'This check runs on your device and never blocks submission.'}</p></div></div><footer><span><LockKeyhole/>Name, email, IP and device are not attached.</span><div><Button variant="outline" onClick={close}>Cancel</Button><Button onClick={submit} disabled={!draft.trim()}>Submit anonymously<ArrowRight/></Button></div></footer></section></div>}
-function Metric({value,label,tone}:{value:string;label:string;tone?:string}){return <div className={`operation-metric ${tone??''}`}><strong>{value}</strong><span>{label}</span></div>}
-function PanelTitle({eyebrow,title,count}:{eyebrow:string;title:string;count:number}){return <div className="panel-title"><div><p className="orientation-label">{eyebrow}</p><h2>{title}</h2></div><span>{count}</span></div>}
+type ResponderProps = {
+  questions: Question[];
+  selected: Question;
+  selectedId: number;
+  answer: string;
+  setSelectedId: (id: number) => void;
+  setAnswer: (value: string) => void;
+  publishAnswer: (id: number) => void;
+};
+function ResponderView(props: ResponderProps) {
+  const assigned = props.questions.filter(
+    (question) =>
+      question.status === 'Assigned' && question.responder?.startsWith('Maya'),
+  );
+  const selected =
+    assigned.find((question) => question.id === props.selectedId) ??
+    assigned[0] ??
+    props.selected;
+  return (
+    <div className="workspace-page page-shell">
+      <header className="workspace-heading">
+        <div>
+          <p className="eyebrow">Responder</p>
+          <h1>Answer what has been assigned.</h1>
+          <p>
+            You have normal employee access plus responsibility for these
+            questions.
+          </p>
+        </div>
+        <span>
+          <UserRoundCheck />
+          Maya · People Leadership
+        </span>
+      </header>
+      <div className="work-layout">
+        <aside className="work-queue">
+          <header>
+            <strong>Assigned to you</strong>
+            <span>{assigned.length}</span>
+          </header>
+          {assigned.map((question) => (
+            <button
+              key={question.id}
+              className={selected.id === question.id ? 'active' : ''}
+              onClick={() => props.setSelectedId(question.id)}
+            >
+              <span>AF-{question.id}</span>
+              <strong>{question.question}</strong>
+              <small>{question.age}</small>
+            </button>
+          ))}
+        </aside>
+        <section className="work-detail response-work">
+          <div className="record-meta">
+            <span>AF-{selected.id}</span>
+            <span className="status status-assigned">Assigned</span>
+          </div>
+          <h2>{selected.question}</h2>
+          <blockquote>{selected.detail}</blockquote>
+          <div className="privacy-boundary">
+            <EyeOff />
+            <span>
+              <strong>Anonymous context</strong>
+              {selected.upvotes} people support this question and{' '}
+              {selected.comments} added thoughts. Their identities are not
+              available.
+            </span>
+          </div>
+          <div className="answer-editor">
+            <label htmlFor="answer">Your official answer</label>
+            <Textarea
+              id="answer"
+              value={props.answer}
+              onChange={(event) => props.setAnswer(event.target.value)}
+              placeholder="Give a direct answer. Explain the decision and what happens next…"
+            />
+          </div>
+          <footer className="decision-row">
+            <span>
+              <Send />
+              Published answers are visible to employees.
+            </span>
+            <Button
+              disabled={!props.answer.trim()}
+              onClick={() => props.publishAnswer(selected.id)}
+            >
+              Publish answer
+              <ArrowRight />
+            </Button>
+          </footer>
+        </section>
+      </div>
+    </div>
+  );
+}
