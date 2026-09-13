@@ -123,7 +123,7 @@ function randomToken(prefix: string) {
 }
 
 function isEverstageEmail(value: string | undefined) {
-  return /^[^@\\s]+@everstage\\.com$/i.test(value ?? '');
+  return /^[^@\s]+@everstage\.com$/i.test(value ?? '');
 }
 
 async function hashToken(value: string) {
