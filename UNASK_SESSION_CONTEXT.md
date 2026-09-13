@@ -164,6 +164,8 @@ Question records currently include:
 13. Switched anonymous thread secrets to client-generated SHA-256 hashes; raw recovery keys remain only in the browser tab.
 14. Added the anonymous-feedback support schema: public thoughts plus private thread, staff-role, and staff-audit tables.
 15. Added explicit grants, RLS, constraints, foreign-key indexes, and schema comments for those tables.
+16. Replaced passwordless email links with Google OAuth for Everstage Workspace accounts.
+17. Tightened database access to require both an exact `@everstage.com` email and a server-issued Google provider claim.
 
 ## Deployment
 
@@ -199,7 +201,7 @@ The Sites source branch contains the final commit.
 
 - Employee submissions and votes persist in Supabase; HR/responder preview actions are still local-only.
 - Role switching is a demonstration control, not authentication. Database staff writes require trusted `app_metadata.unask_role` claims and responder assignments.
-- Passwordless Supabase Auth is implemented. Company-wide email delivery still requires custom SMTP and the Railway origin in Supabase Auth URL Configuration.
+- Google OAuth is implemented in the app and RLS. The Supabase Google provider still requires a Google OAuth client ID and secret, plus the Railway redirect URL, before live sign-in can complete.
 - Anonymous submission rows do not store employee identity, and public database access excludes private thread fields. The complete anonymity threat model still needs formal review.
 - The moderation audit table now exists, but workflow triggers and the HR UI are not connected yet.
 - The private thread table exists, but moving the current protected thread-hash intake into it requires a separately reviewed backend/RPC migration.

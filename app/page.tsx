@@ -1,11 +1,7 @@
 'use client';
 
-import {
-  type SyntheticEvent,
-  useEffect,
-  useMemo,
-  useState,
-} from 'react';
+import { type SyntheticEvent, useEffect, useMemo, useState } from 'react';
+import type { User } from '@supabase/supabase-js';
 import {
   ArrowRight,
   Check,
@@ -36,7 +32,7 @@ type Status =
   | 'Answered'
   | 'Closed';
 type Visibility = 'anonymous' | 'named';
-type AuthState = 'checking' | 'signin' | 'sent' | 'denied' | 'app';
+type AuthState = 'checking' | 'signin' | 'denied' | 'app';
 type Question = {
   id: number;
   question: string;
@@ -126,6 +122,16 @@ function isEverstageEmail(value: string | undefined) {
   return /^[^@\s]+@everstage\.com$/i.test(value ?? '');
 }
 
+function isGoogleUser(user: User) {
+  const providers = Array.isArray(user.app_metadata.providers)
+    ? user.app_metadata.providers
+    : [];
+
+  return (
+    user.app_metadata.provider === 'google' || providers.includes('google')
+  );
+}
+
 async function hashToken(value: string) {
   const bytes = new TextEncoder().encode(value);
   const digest = await crypto.subtle.digest('SHA-256', bytes);
@@ -170,7 +176,6 @@ function rowToQuestion(row: PublicQuestionRow): Question {
 
 export default function HomePage() {
   const [auth, setAuth] = useState<AuthState>('checking');
-  const [email, setEmail] = useState('');
   const [authPending, setAuthPending] = useState(false);
   const [authError, setAuthError] = useState('');
   const [sessionId, setSessionId] = useState('');
@@ -194,32 +199,30 @@ export default function HomePage() {
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    const applySession = (sessionEmail: string | undefined) => {
-      if (isEverstageEmail(sessionEmail)) {
+    const applyUser = (user: User | null) => {
+      if (user && isGoogleUser(user) && isEverstageEmail(user.email)) {
         setSessionId((current) => current || randomToken('ses'));
         setAuth('app');
         return;
       }
 
-      if (sessionEmail) {
+      if (user) {
         setAuth('denied');
         void supabase.auth.signOut({ scope: 'local' });
         return;
       }
 
-      setAuth((current) =>
-        current === 'sent' || current === 'denied' ? current : 'signin',
-      );
+      setAuth((current) => (current === 'denied' ? current : 'signin'));
     };
 
-    void supabase.auth.getSession().then(({ data }) => {
-      applySession(data.session?.user.email);
+    void supabase.auth.getUser().then(({ data }) => {
+      applyUser(data.user);
     });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      applySession(session?.user.email);
+      applyUser(session?.user ?? null);
     });
 
     return () => subscription.unsubscribe();
@@ -273,41 +276,32 @@ export default function HomePage() {
 
   const requestAccess = async (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const normalizedEmail = email.trim().toLowerCase();
     setAuthError('');
-
-    if (!isEverstageEmail(normalizedEmail)) {
-      setAuth('denied');
-      return;
-    }
-
     setAuthPending(true);
-    const { error } = await supabase.auth.signInWithOtp({
-      email: normalizedEmail,
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
       options: {
-        shouldCreateUser: true,
-        emailRedirectTo: window.location.origin,
+        redirectTo: window.location.origin,
+        queryParams: {
+          hd: 'everstage.com',
+          prompt: 'select_account',
+        },
       },
     });
     setAuthPending(false);
 
     if (error) {
       setAuthError(
-        error.message === 'Email address not authorized'
-          ? 'Email delivery is not configured for this address yet.'
-          : 'We could not send the sign-in link. Please try again.',
+        error.message.toLowerCase().includes('provider')
+          ? 'Google sign-in is not configured yet. Please contact the Unask administrator.'
+          : 'Google sign-in could not start. Please try again.',
       );
-      return;
     }
-
-    setEmail(normalizedEmail);
-    setAuth('sent');
   };
 
   const signOut = async () => {
     await supabase.auth.signOut({ scope: 'local' });
     setAuth('signin');
-    setEmail('');
     setSessionId('');
     setRole('employee');
     setBackendState('connecting');
@@ -338,10 +332,7 @@ export default function HomePage() {
       return;
     }
 
-    sessionStorage.setItem(
-      `unask.thread.${threadKey.slice(-6)}`,
-      threadKey,
-    );
+    sessionStorage.setItem(`unask.thread.${threadKey.slice(-6)}`, threadKey);
 
     const question: Question = {
       id: localId,
@@ -399,9 +390,7 @@ export default function HomePage() {
     const totals = data?.[0];
     if (error || !totals) {
       setQuestions((current) =>
-        current.map((question) =>
-          question.id === id ? previous : question,
-        ),
+        current.map((question) => (question.id === id ? previous : question)),
       );
       notify('That vote could not be saved. Please try again.');
       return;
@@ -475,13 +464,10 @@ export default function HomePage() {
     return (
       <AuthMock
         state={auth}
-        email={email}
         pending={authPending}
         error={authError}
-        setEmail={setEmail}
         requestAccess={requestAccess}
         reset={() => {
-          setEmail('');
           setAuthError('');
           setAuth('signin');
         }}
@@ -570,18 +556,14 @@ function Brand() {
 
 function AuthMock({
   state,
-  email,
   pending,
   error,
-  setEmail,
   requestAccess,
   reset,
 }: {
   state: Exclude<AuthState, 'app'>;
-  email: string;
   pending: boolean;
   error: string;
-  setEmail: (value: string) => void;
   requestAccess: (event: SyntheticEvent<HTMLFormElement>) => void;
   reset: () => void;
 }) {
@@ -613,49 +595,23 @@ function AuthMock({
           <div className="auth-card">
             <ShieldCheck className="auth-icon" />
             <p className="eyebrow">Everstage access</p>
-            <h2>Verify your work email</h2>
+            <h2>Continue with Google</h2>
             <p>
-              We will email you a one-time sign-in link. Only verified
-              addresses ending in @everstage.com can enter.
+              Use your Everstage Google Workspace account. Personal Google
+              accounts and other company domains are refused.
             </p>
             <form className="auth-form" onSubmit={requestAccess}>
-              <label htmlFor="work-email">Work email</label>
-              <input
-                id="work-email"
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="you@everstage.com"
-                required
-              />
               {error && <p className="auth-error">{error}</p>}
-              <Button disabled={pending || !email.trim()}>
-                {pending ? 'Sending…' : 'Email me a sign-in link'}
+              <Button disabled={pending}>
+                {pending ? 'Opening Google…' : 'Continue with Google'}
                 <ArrowRight />
               </Button>
             </form>
             <div className="auth-note">
               <LockKeyhole />
-              Your email proves company membership. It is never written to a
-              question, vote, or anonymous thread.
+              Google verifies company membership. Your identity is never written
+              to a question, vote, or anonymous thread.
             </div>
-          </div>
-        )}
-        {state === 'sent' && (
-          <div className="auth-card proof-card">
-            <span className="result-icon success">
-              <Check />
-            </span>
-            <p className="eyebrow">Verification sent</p>
-            <h2>Check your work inbox.</h2>
-            <p>
-              Open the one-time link sent to {email}. You will return here
-              with verified Everstage access.
-            </p>
-            <button className="text-button" onClick={reset}>
-              Use another email
-            </button>
           </div>
         )}
         {state === 'denied' && (
@@ -664,8 +620,9 @@ function AuthMock({
             <p className="eyebrow">Access refused</p>
             <h2>This workspace is for Everstage employees.</h2>
             <p>
-              Use a verified email address ending exactly in @everstage.com.
-              No application access or feedback data was granted.
+              Use an Everstage Google Workspace account ending exactly in
+              @everstage.com. No application access or feedback data was
+              granted.
             </p>
             <Button variant="outline" onClick={reset}>
               Try another account
@@ -941,8 +898,7 @@ function QuestionRow({
           <footer>
             <button
               disabled={
-                question.status !== 'Assigned' &&
-                question.status !== 'Answered'
+                question.status !== 'Assigned' && question.status !== 'Answered'
               }
               onClick={() => vote(question.id, 'up')}
             >
@@ -951,8 +907,7 @@ function QuestionRow({
             </button>
             <button
               disabled={
-                question.status !== 'Assigned' &&
-                question.status !== 'Answered'
+                question.status !== 'Assigned' && question.status !== 'Answered'
               }
               onClick={() => vote(question.id, 'down')}
             >

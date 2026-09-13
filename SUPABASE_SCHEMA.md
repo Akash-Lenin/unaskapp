@@ -13,7 +13,7 @@ Project: `kykvxhbinrduankuvplm`
 ## Access rules
 
 - All four support tables have RLS enabled.
-- Only verified `@everstage.com` sessions may read or add published thoughts.
+- Only Google-authenticated sessions with an exact `@everstage.com` email may access Unask data or add published thoughts.
 - HR sessions may hide or republish thoughts using the existing trusted `app_metadata.unask_role` claim.
 - `anon` has no table privileges.
 - Browser-authenticated users have no privileges on any `private` table.
