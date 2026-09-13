@@ -633,7 +633,7 @@ function AuthMock({
               @everstage.com. No application access or feedback data was
               granted.
             </p>
-            <Button variant="outline" onClick={reset}>
+            <Button type="button" variant="outline" onClick={reset}>
               Try another account
             </Button>
           </div>
@@ -681,7 +681,7 @@ function Header({
               ? 'Offline'
               : 'Connecting'}
         </span>
-        <button onClick={signOut} aria-label="End test session">
+        <button type="button" onClick={signOut} aria-label="End test session">
           <LogOut />
         </button>
       </div>
@@ -704,7 +704,9 @@ function ProofStrip({
         access gate and is not stored with question session{' '}
         {sessionId.slice(0, 8)}••••.
       </span>
-      <button onClick={close}>Dismiss</button>
+      <button type="button" onClick={close}>
+        Dismiss
+      </button>
     </div>
   );
 }
@@ -804,7 +806,10 @@ function EmployeeView(props: EmployeeProps) {
                 aria-label="Display name"
               />
             )}
-            <Button disabled={!props.draft.trim() || props.submitting}>
+            <Button
+              type="submit"
+              disabled={!props.draft.trim() || props.submitting}
+            >
               {props.submitting ? 'Saving…' : 'Send to HR'}
               <ArrowRight />
             </Button>
@@ -863,7 +868,7 @@ function QuestionRow({
 }) {
   return (
     <article className={`question-row ${expanded ? 'expanded' : ''}`}>
-      <button className="question-main" onClick={toggle}>
+      <button type="button" className="question-main" onClick={toggle}>
         <div>
           <span
             className={`status status-${question.status.toLowerCase().replaceAll(' ', '-')}`}
@@ -906,6 +911,7 @@ function QuestionRow({
           )}
           <footer>
             <button
+              type="button"
               disabled={
                 question.status !== 'Assigned' && question.status !== 'Answered'
               }
@@ -915,6 +921,7 @@ function QuestionRow({
               {question.upvotes}
             </button>
             <button
+              type="button"
               disabled={
                 question.status !== 'Assigned' && question.status !== 'Answered'
               }
@@ -977,6 +984,7 @@ function HrView(props: HrProps) {
           </header>
           {queue.map((question) => (
             <button
+              type="button"
               key={question.id}
               className={props.selectedId === question.id ? 'active' : ''}
               onClick={() => props.setSelectedId(question.id)}
@@ -1017,6 +1025,7 @@ function HrView(props: HrProps) {
               placeholder="Ask a private follow-up without learning who sent it…"
             />
             <Button
+              type="button"
               variant="outline"
               disabled={!props.privateReply.trim()}
               onClick={props.requestClarification}
@@ -1037,10 +1046,14 @@ function HrView(props: HrProps) {
             </select>
           </div>
           <footer className="decision-row">
-            <button className="close-action" onClick={props.closeQuestion}>
+            <button
+              type="button"
+              className="close-action"
+              onClick={props.closeQuestion}
+            >
               Reject or close
             </button>
-            <Button onClick={props.approveAndAssign}>
+            <Button type="button" onClick={props.approveAndAssign}>
               Approve and assign
               <ArrowRight />
             </Button>
@@ -1093,6 +1106,7 @@ function ResponderView(props: ResponderProps) {
           </header>
           {assigned.map((question) => (
             <button
+              type="button"
               key={question.id}
               className={selected.id === question.id ? 'active' : ''}
               onClick={() => props.setSelectedId(question.id)}
@@ -1134,6 +1148,7 @@ function ResponderView(props: ResponderProps) {
               Published answers are visible to employees.
             </span>
             <Button
+              type="button"
               disabled={!props.answer.trim()}
               onClick={() => props.publishAnswer(selected.id)}
             >
