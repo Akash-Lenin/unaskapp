@@ -713,6 +713,10 @@
   align-items: center;
   gap: 5px;
 }
+.question-detail > footer button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
 .question-detail > footer svg {
   width: 12px;
 }

@@ -15,18 +15,18 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   metadataBase: new URL(
     process.env.NEXT_PUBLIC_SITE_URL ??
-      'https://unask-anonymous-feedback.everstage-in-8623.chatgpt.site',
+      'https://unaskapp-production.up.railway.app',
   ),
-  title: 'Anonymous Feedback — Speak freely',
+  title: 'Unask — Speak freely',
   description: 'A private space to share workplace feedback without revealing who said it.',
   openGraph: {
-    title: 'Anonymous Feedback',
+    title: 'Unask',
     description: 'Say what needs to be said.',
     images: ['/og.png'],
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Anonymous Feedback',
+    title: 'Unask',
     description: 'Say what needs to be said.',
     images: ['/og.png'],
   },

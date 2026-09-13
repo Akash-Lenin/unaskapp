@@ -1,6 +1,11 @@
 'use client';
 
-import { type SyntheticEvent, useMemo, useState } from 'react';
+import {
+  type SyntheticEvent,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 import {
   ArrowRight,
   Check,
@@ -20,6 +25,8 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import type { QuestionRow } from '@/lib/database.types';
+import { supabase } from '@/lib/supabase';
 
 type Role = 'employee' | 'hr' | 'responder';
 type Status =
@@ -44,7 +51,10 @@ type Question = {
   owned?: boolean;
   displayName?: string;
   threadKey?: string;
+  persisted?: boolean;
 };
+
+type PublicQuestionRow = Omit<QuestionRow, 'private_reply' | 'thread_key'>;
 
 const seed: Question[] = [
   {
@@ -111,6 +121,40 @@ function randomToken(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
 }
 
+function questionReference(question: Question) {
+  return question.threadKey
+    ? `AF-${question.threadKey.slice(-6).toUpperCase()}`
+    : `AF-${question.id}`;
+}
+
+function relativeAge(value: string) {
+  const elapsed = Math.max(0, Date.now() - new Date(value).getTime());
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hr${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+function rowToQuestion(row: PublicQuestionRow): Question {
+  return {
+    id: row.id,
+    question: row.question,
+    detail: row.detail,
+    status: row.status,
+    age: relativeAge(row.created_at),
+    upvotes: row.upvotes,
+    dislikes: row.dislikes,
+    comments: row.comments_count,
+    responder: row.responder_label ?? undefined,
+    answer: row.answer ?? undefined,
+    displayName: row.display_name ?? undefined,
+    persisted: true,
+  };
+}
+
 export default function HomePage() {
   const [auth, setAuth] = useState<'signin' | 'accepted' | 'denied' | 'app'>(
     'signin',
@@ -130,6 +174,38 @@ export default function HomePage() {
   const [expandedId, setExpandedId] = useState<number | null>(2836);
   const [toast, setToast] = useState('');
   const [showProof, setShowProof] = useState(true);
+  const [backendState, setBackendState] = useState<
+    'connecting' | 'live' | 'error'
+  >('connecting');
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    const request = supabase
+      .from('questions')
+      .select(
+        'id, question, detail, status, visibility, display_name, upvotes, dislikes, comments_count, responder_label, answer, created_at, updated_at',
+      )
+      .order('created_at', { ascending: false });
+
+    void request.then(({ data, error }) => {
+      if (error) {
+        setBackendState('error');
+        return;
+      }
+
+      const liveQuestions = (data ?? []).map((row) =>
+        rowToQuestion(row as PublicQuestionRow),
+      );
+      setQuestions((current) => [
+        ...liveQuestions,
+        ...current.filter(
+          (question) =>
+            question.status !== 'Assigned' && question.status !== 'Answered',
+        ),
+      ]);
+      setBackendState('live');
+    });
+  }, []);
 
   const risks = useMemo(
     () =>
@@ -162,11 +238,32 @@ export default function HomePage() {
     setRole('employee');
   };
 
-  const submitQuestion = (event: SyntheticEvent<HTMLFormElement>) => {
+  const submitQuestion = async (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!draft.trim()) return;
+    if (!draft.trim() || submitting) return;
+    setSubmitting(true);
+    const threadKey = randomToken('thr');
+    const localId = Date.now();
+    const { error } = await supabase.from('questions').insert({
+      question: draft.trim(),
+      detail: detail.trim(),
+      visibility,
+      display_name:
+        visibility === 'named'
+          ? displayName.trim() || 'Name entered by author'
+          : undefined,
+      thread_key: threadKey,
+    });
+
+    if (error) {
+      setSubmitting(false);
+      setBackendState('error');
+      notify('The question could not be saved. Please try again.');
+      return;
+    }
+
     const question: Question = {
-      id: Math.max(...questions.map((item) => item.id)) + 1,
+      id: localId,
       question: draft.trim(),
       detail: detail.trim() || 'No additional context was added.',
       status: 'Under review',
@@ -179,7 +276,8 @@ export default function HomePage() {
         visibility === 'named'
           ? displayName.trim() || 'Name entered by author'
           : undefined,
-      threadKey: randomToken('thr'),
+      threadKey,
+      persisted: true,
     };
     setQuestions((current) => [question, ...current]);
     setSelectedId(question.id);
@@ -188,10 +286,20 @@ export default function HomePage() {
     setDetail('');
     setDisplayName('');
     setVisibility('anonymous');
-    notify(`Question AF-${question.id} entered the private HR queue.`);
+    setSubmitting(false);
+    setBackendState('live');
+    notify(
+      `Question ${questionReference(question)} entered the private HR queue.`,
+    );
   };
 
-  const vote = (id: number, direction: 'up' | 'down') =>
+  const vote = async (id: number, direction: 'up' | 'down') => {
+    const previous = questions.find((question) => question.id === id);
+    if (!previous) return;
+    if (previous.status !== 'Assigned' && previous.status !== 'Answered') {
+      notify('Voting opens after HR publishes the question.');
+      return;
+    }
     setQuestions((current) =>
       current.map((question) =>
         question.id === id
@@ -203,6 +311,32 @@ export default function HomePage() {
           : question,
       ),
     );
+    const { data, error } = await supabase.rpc('vote_question', {
+      p_question_id: id,
+      p_direction: direction,
+    });
+    const totals = data?.[0];
+    if (error || !totals) {
+      setQuestions((current) =>
+        current.map((question) =>
+          question.id === id ? previous : question,
+        ),
+      );
+      notify('That vote could not be saved. Please try again.');
+      return;
+    }
+    setQuestions((current) =>
+      current.map((question) =>
+        question.id === id
+          ? {
+              ...question,
+              upvotes: totals.upvotes,
+              dislikes: totals.dislikes,
+            }
+          : question,
+      ),
+    );
+  };
 
   const requestClarification = () => {
     if (!privateReply.trim()) return;
@@ -274,6 +408,7 @@ export default function HomePage() {
         setRole={setRole}
         sessionId={sessionId}
         signOut={signOut}
+        backendState={backendState}
       />
       {showProof && (
         <ProofStrip sessionId={sessionId} close={() => setShowProof(false)} />
@@ -296,6 +431,7 @@ export default function HomePage() {
           setExpandedId={setExpandedId}
           submit={submitQuestion}
           vote={vote}
+          submitting={submitting}
         />
       )}
       {role === 'hr' && (
@@ -464,11 +600,13 @@ function Header({
   setRole,
   sessionId,
   signOut,
+  backendState,
 }: {
   role: Role;
   setRole: (role: Role) => void;
   sessionId: string;
   signOut: () => void;
+  backendState: 'connecting' | 'live' | 'error';
 }) {
   return (
     <header className="unask-header">
@@ -487,7 +625,14 @@ function Header({
       </div>
       <div className="session-state">
         <EyeOff />
-        <span>Anonymous session {sessionId.slice(-4)}</span>
+        <span>
+          Anonymous session {sessionId.slice(-4)} ·{' '}
+          {backendState === 'live'
+            ? 'Synced'
+            : backendState === 'error'
+              ? 'Offline'
+              : 'Connecting'}
+        </span>
         <button onClick={signOut} aria-label="End test session">
           <LogOut />
         </button>
@@ -532,6 +677,7 @@ type EmployeeProps = {
   setExpandedId: (value: number | null) => void;
   submit: (event: SyntheticEvent<HTMLFormElement>) => void;
   vote: (id: number, direction: 'up' | 'down') => void;
+  submitting: boolean;
 };
 
 function EmployeeView(props: EmployeeProps) {
@@ -609,8 +755,8 @@ function EmployeeView(props: EmployeeProps) {
                 aria-label="Display name"
               />
             )}
-            <Button disabled={!props.draft.trim()}>
-              Send to HR
+            <Button disabled={!props.draft.trim() || props.submitting}>
+              {props.submitting ? 'Saving…' : 'Send to HR'}
               <ArrowRight />
             </Button>
           </footer>
@@ -710,11 +856,23 @@ function QuestionRow({
             </div>
           )}
           <footer>
-            <button onClick={() => vote(question.id, 'up')}>
+            <button
+              disabled={
+                question.status !== 'Assigned' &&
+                question.status !== 'Answered'
+              }
+              onClick={() => vote(question.id, 'up')}
+            >
               <ThumbsUp />
               {question.upvotes}
             </button>
-            <button onClick={() => vote(question.id, 'down')}>
+            <button
+              disabled={
+                question.status !== 'Assigned' &&
+                question.status !== 'Answered'
+              }
+              onClick={() => vote(question.id, 'down')}
+            >
               <ThumbsDown />
               {question.dislikes}
             </button>
@@ -776,7 +934,7 @@ function HrView(props: HrProps) {
               className={props.selectedId === question.id ? 'active' : ''}
               onClick={() => props.setSelectedId(question.id)}
             >
-              <span>AF-{question.id}</span>
+              <span>{questionReference(question)}</span>
               <strong>{question.question}</strong>
               <small>
                 {question.status} · {question.age}
@@ -786,7 +944,7 @@ function HrView(props: HrProps) {
         </aside>
         <section className="work-detail">
           <div className="record-meta">
-            <span>AF-{props.selected.id}</span>
+            <span>{questionReference(props.selected)}</span>
             <span
               className={`status status-${props.selected.status.toLowerCase().replaceAll(' ', '-')}`}
             >
@@ -892,7 +1050,7 @@ function ResponderView(props: ResponderProps) {
               className={selected.id === question.id ? 'active' : ''}
               onClick={() => props.setSelectedId(question.id)}
             >
-              <span>AF-{question.id}</span>
+              <span>{questionReference(question)}</span>
               <strong>{question.question}</strong>
               <small>{question.age}</small>
             </button>
@@ -900,7 +1058,7 @@ function ResponderView(props: ResponderProps) {
         </aside>
         <section className="work-detail response-work">
           <div className="record-meta">
-            <span>AF-{selected.id}</span>
+            <span>{questionReference(selected)}</span>
             <span className="status status-assigned">Assigned</span>
           </div>
           <h2>{selected.question}</h2>

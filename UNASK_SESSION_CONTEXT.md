@@ -1,0 +1,233 @@
+# Unask — Session Context Export
+
+Exported: 2026-09-13 (Asia/Kolkata)
+
+## Purpose
+
+This document is a self-contained handoff for the Unask anonymous workplace feedback application. It records the user-visible goals, recovered project state, current functionality, implementation structure, validation results, deployment state, and useful continuation notes from this session.
+
+It intentionally excludes credentials, authentication tokens, hidden system instructions, and private reasoning.
+
+## User Request
+
+The user asked to resume the previous session for the Unask app. The existing workspace was inspected and restored rather than replaced.
+
+The workspace already contained a coherent anonymous-feedback prototype and generated build output, but it did not initially contain Git history or a linked Sites project identifier.
+
+## Product Summary
+
+Unask is a role-aware workplace question-and-response prototype designed to let employees raise questions without attaching their identity.
+
+The experience demonstrates three roles:
+
+- **Employee:** submits anonymous questions, searches and filters the shared feed, votes, adds anonymous thoughts, and reads published answers.
+- **HR Admin:** reviews open questions, sees engagement signals, categorizes questions, and assigns them to an appropriate responder without access to sender identity.
+- **Responder:** sees only assigned questions and publishes official answers to the employee feed.
+
+The employee feed, anonymous question submission, and voting are now connected to Supabase project `kykvxhbinrduankuvplm`. The HR and responder screens remain role-preview UI until production SSO issues trusted staff claims. Audit controls and a complete production anonymity architecture are still future work.
+
+## Current User Experience
+
+### Global role preview
+
+The header provides a **Preview as** control for switching among Employee, HR Admin, and Responder views. A persistent privacy strip explains that a production version would use SSO to assign roles while keeping identity detached from feedback.
+
+### Employee workflow
+
+- View seeded questions in a shared feed.
+- Filter by All, Open, or Answered.
+- Search question text and categories.
+- Select a question to inspect its answer or response status.
+- Upvote or downvote a question.
+- Add an anonymous thought to the selected question.
+- Open the anonymous question composer.
+- Select a topic and submit a new question.
+- Receive an on-screen success confirmation.
+
+### Privacy guidance in the composer
+
+The composer performs a local pattern check for phrases that may make a sender identifiable, including:
+
+- References to being the only person in a group.
+- Specific reporting relationships such as “my manager” or “my skip.”
+- Precise personal events such as “when I joined.”
+- Small regional groups such as India, EMEA, APAC, Seattle, or Bangalore teams.
+
+The check warns the user but does not block submission. The UI states that name, email, IP address, and device information are not attached. This is prototype copy, not yet backed by production infrastructure.
+
+### HR Admin workflow
+
+- Review questions that are not yet answered.
+- See operational summary metrics.
+- Inspect question context and engagement.
+- See explicit identity-redaction messaging.
+- Review category options.
+- Assign a question to a responder.
+
+### Responder workflow
+
+- View questions assigned to the sample responder, Maya.
+- Inspect the question and its anonymous engagement context.
+- Draft and publish an official answer.
+- See an empty state when no assigned questions remain.
+
+## Seeded Demonstration Content
+
+The prototype includes sample questions about:
+
+- Promotion criteria and review timelines.
+- Territory-change reasoning.
+- Recognition for behind-the-scenes work.
+- A reliable source for pricing and competitor guidance.
+
+The supported categories are Career growth, Ways of working, Recognition, and Enablement. The sample responders are Maya from People Leadership, Arjun from Revenue Operations, and Leena from Enablement.
+
+## Visual Direction
+
+The interface uses a warm editorial workplace aesthetic:
+
+- Warm paper background and white cards.
+- Dark ink typography.
+- Orange as the primary action accent.
+- Teal for privacy and trust signals.
+- Plum for deeper contrast.
+- Compact uppercase orientation labels.
+- Fine borders, restrained rounded corners, and dense product-focused layouts.
+
+The layout is responsive and includes mobile adaptations in the shared stylesheet.
+
+## Implementation
+
+### Stack
+
+- React 19
+- TypeScript
+- Vinext/Vite
+- Tailwind CSS 4
+- shadcn-based UI components
+- Lucide icons
+- Cloudflare Worker-compatible Sites output
+
+### Important files
+
+- `app/page.tsx` — complete prototype logic and the three role experiences.
+- `app/globals.css` — design tokens, product styling, layouts, responsive behavior, and older retained styles from preceding iterations.
+- `app/layout.tsx` — page metadata and social-preview configuration.
+- `public/og.png` — preserved social-preview image.
+- `public/favicon.svg` — site favicon.
+- `.openai/hosting.json` — Sites project linkage; no D1 or R2 bindings are configured.
+- `package.json` — development, build, lint, and formatting commands.
+
+### State model
+
+The main page stores questions, selected question, role, composer state, filters, votes, draft text, assignment actions, and published answers in React `useState` values.
+
+Question records currently include:
+
+- Numeric ID
+- Question and context
+- Category
+- Status: Under review, Assigned, or Answered
+- Relative age
+- Upvotes, dislikes, and thought count
+- Optional responder
+- Optional official answer
+
+## Work Completed in This Session
+
+1. Inspected and recovered the existing Unask workspace.
+2. Confirmed the project was an existing Sites/Vinext application.
+3. Verified the full production build succeeds.
+4. Started and verified a local development response with HTTP 200.
+5. Attempted to restore the in-chat browser preview; no browser surface was available in the current session.
+6. Created a private Sites project for the restored application.
+7. Initialized local Git history because the recovered workspace did not contain a repository.
+8. Saved and uploaded the validated source.
+9. Published the application privately.
+10. Updated the metadata base URL to the deployed Unask origin.
+11. Rebuilt, saved, and redeployed the final metadata-corrected version.
+
+## Supabase Continuation
+
+1. Connected and verified Supabase project `kykvxhbinrduankuvplm` as active and healthy.
+2. Added and seeded the durable `public.questions` data source.
+3. Restricted public reads to assigned and answered questions.
+4. Restricted anonymous inserts to clean, under-review records without administrative fields.
+5. Added guarded, persistent voting for public questions.
+6. Added trusted HR and responder RLS paths based on server-controlled app metadata.
+7. Prevented public access to private thread and clarification fields.
+8. Fixed all Supabase security-advisor findings.
+9. Connected the React employee feed, submission flow, and voting to Supabase.
+10. Updated the canonical metadata origin to the Railway deployment.
+
+## Deployment
+
+Private live URL:
+
+https://unaskapp-production.up.railway.app/
+
+The latest deployment completed successfully. The linked Sites project is recorded locally in `.openai/hosting.json`.
+
+## Validation
+
+- `npm run build` completed successfully after the final source change.
+- The local root route returned HTTP 200.
+- The final Sites deployment reported a successful production state.
+- The metadata base URL now points to the deployed site, so social-preview paths resolve against the correct origin.
+
+Vinext emitted a non-blocking deprecation warning about Node's `module.register()` and noted that some route classification remains unknown. Neither warning prevented the build or deployment.
+
+Browser-based visual QA was not performed because no in-app or connected browser was available. The successful build, local HTTP response, and deployment were still verified.
+
+## Git State
+
+Local Git history was initialized during recovery.
+
+Recorded commits:
+
+- `976521b` — Resume Unask anonymous feedback app.
+- `ccc1628` — Use deployed URL for social metadata.
+
+The Sites source branch contains the final commit.
+
+## Known Gaps and Risks
+
+- Employee submissions and votes persist in Supabase; HR/responder preview actions are still local-only.
+- Role switching is a demonstration control, not authentication. Database staff writes require trusted `app_metadata.unask_role` claims and responder assignments.
+- SSO is described in the UI but is not implemented.
+- Anonymous submission rows do not store employee identity, and public database access excludes private thread fields. The complete anonymity threat model still needs formal review.
+- There is no moderation queue persistence, audit log, rate limiting, abuse prevention, notification system, or analytics pipeline.
+- The privacy phrase detection is regex-based and intentionally lightweight.
+- The visible product and metadata now use **Unask**.
+- The shared stylesheet retains styles from earlier interface concepts that are not all used by the current page.
+
+## Recommended Next Product Slice
+
+The highest-value next step is to convert the prototype into a durable, role-secured application:
+
+1. Confirm whether the visible brand should be **Unask** everywhere.
+2. Define the production anonymity model and threat boundaries before collecting real feedback.
+3. Replace the SSO mock with production company authentication and issue trusted HR/responder role claims.
+4. Connect moderation, private clarification, assignments, and published responses to Supabase.
+5. Add moderation and abuse safeguards.
+6. Run browser-based visual and interaction QA across desktop and mobile.
+
+## How to Resume Development
+
+From the project directory:
+
+```bash
+npm run dev
+```
+
+For a production validation build:
+
+```bash
+npm run build
+```
+
+Continue from the existing source and project linkage. Do not create another Sites project for this checkout; reuse the project recorded in `.openai/hosting.json`.
+
+## Safe Context Prompt for a Future Session
+
+> Resume the Unask anonymous-feedback app from `UNASK_SESSION_CONTEXT.md`. Preserve the existing Sites project and visual language. Review the known gaps, confirm the requested next product slice, implement it, validate the build, and publish the updated private site.
