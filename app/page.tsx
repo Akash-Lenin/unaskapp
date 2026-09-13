@@ -278,25 +278,34 @@ export default function HomePage() {
     event.preventDefault();
     setAuthError('');
     setAuthPending(true);
-    const { error } = await supabase.auth.signInWithOAuth({
+    const { data, error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
         redirectTo: window.location.origin,
+        skipBrowserRedirect: true,
         queryParams: {
           hd: 'everstage.com',
           prompt: 'select_account',
         },
       },
     });
-    setAuthPending(false);
-
     if (error) {
+      setAuthPending(false);
       setAuthError(
         error.message.toLowerCase().includes('provider')
           ? 'Google sign-in is not configured yet. Please contact the Unask administrator.'
           : 'Google sign-in could not start. Please try again.',
       );
+      return;
     }
+
+    if (!data.url) {
+      setAuthPending(false);
+      setAuthError('Google sign-in could not start. Please try again.');
+      return;
+    }
+
+    window.location.assign(data.url);
   };
 
   const signOut = async () => {
@@ -602,7 +611,7 @@ function AuthMock({
             </p>
             <form className="auth-form" onSubmit={requestAccess}>
               {error && <p className="auth-error">{error}</p>}
-              <Button disabled={pending}>
+              <Button type="submit" disabled={pending}>
                 {pending ? 'Opening Google…' : 'Continue with Google'}
                 <ArrowRight />
               </Button>
