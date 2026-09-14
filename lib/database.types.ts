@@ -106,7 +106,74 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      get_staff_profile: {
+        Args: Record<PropertyKey, never>;
+        Returns: {
+          responder_label: string | null;
+          staff_role: string | null;
+        }[];
+      };
+      get_unask_question_thread: {
+        Args: { p_question_id: number; p_thread_hash: string };
+        Returns: {
+          answer: string | null;
+          comments_count: number;
+          created_at: string;
+          detail: string;
+          dislikes: number;
+          display_name: string | null;
+          id: number;
+          private_reply: string | null;
+          question: string;
+          responder_label: string | null;
+          status: Database['public']['Enums']['question_status'];
+          updated_at: string;
+          upvotes: number;
+          visibility: Database['public']['Enums']['question_visibility'];
+        }[];
+      };
       is_everstage_user: { Args: never; Returns: boolean };
+      list_unask_responders: {
+        Args: Record<PropertyKey, never>;
+        Returns: { responder_label: string | null }[];
+      };
+      moderate_unask_question: {
+        Args: {
+          p_action: string;
+          p_private_reply?: string;
+          p_question_id: number;
+          p_responder_label?: string;
+        };
+        Returns: undefined;
+      };
+      publish_unask_answer: {
+        Args: { p_answer: string; p_question_id: number };
+        Returns: undefined;
+      };
+      submit_unask_question: {
+        Args: {
+          p_detail: string;
+          p_display_name: string;
+          p_question: string;
+          p_thread_hash: string;
+          p_visibility: string;
+        };
+        Returns: {
+          answer: string | null;
+          comments_count: number;
+          created_at: string;
+          detail: string;
+          dislikes: number;
+          display_name: string | null;
+          id: number;
+          question: string;
+          responder_label: string | null;
+          status: Database['public']['Enums']['question_status'];
+          updated_at: string;
+          upvotes: number;
+          visibility: Database['public']['Enums']['question_visibility'];
+        }[];
+      };
       vote_question: {
         Args: { p_direction: string; p_question_id: number };
         Returns: { dislikes: number; upvotes: number }[];

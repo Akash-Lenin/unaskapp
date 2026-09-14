@@ -25,6 +25,7 @@ import type { QuestionRow } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
 
 type Role = 'employee' | 'hr' | 'responder';
+type StaffRole = Exclude<Role, 'employee'> | null;
 type Status =
   | 'Under review'
   | 'Needs clarification'
@@ -94,11 +95,6 @@ const seed: Question[] = [
   },
 ];
 
-const responders = [
-  'Maya · People Leadership',
-  'Arjun · Revenue Operations',
-  'Leena · Enablement',
-];
 const identityPatterns: Array<[RegExp, string]> = [
   [
     /(only person|only one|my manager|my skip)/gi,
@@ -180,6 +176,9 @@ export default function HomePage() {
   const [authError, setAuthError] = useState('');
   const [sessionId, setSessionId] = useState('');
   const [role, setRole] = useState<Role>('employee');
+  const [staffRole, setStaffRole] = useState<StaffRole>(null);
+  const [responderLabel, setResponderLabel] = useState('');
+  const [availableResponders, setAvailableResponders] = useState<string[]>([]);
   const [questions, setQuestions] = useState(seed);
   const [selectedId, setSelectedId] = useState(2829);
   const [draft, setDraft] = useState('');
@@ -189,7 +188,7 @@ export default function HomePage() {
   const [search, setSearch] = useState('');
   const [answer, setAnswer] = useState('');
   const [privateReply, setPrivateReply] = useState('');
-  const [responder, setResponder] = useState(responders[0]);
+  const [responder, setResponder] = useState('');
   const [expandedId, setExpandedId] = useState<number | null>(2836);
   const [toast, setToast] = useState('');
   const [showProof, setShowProof] = useState(true);
@@ -197,6 +196,7 @@ export default function HomePage() {
     'connecting' | 'live' | 'error'
   >('connecting');
   const [submitting, setSubmitting] = useState(false);
+  const [workflowPending, setWorkflowPending] = useState(false);
 
   useEffect(() => {
     const applyUser = (user: User | null) => {
@@ -231,14 +231,41 @@ export default function HomePage() {
   useEffect(() => {
     if (auth !== 'app') return;
 
-    const request = supabase
-      .from('questions')
-      .select(
-        'id, question, detail, status, visibility, display_name, upvotes, dislikes, comments_count, responder_label, answer, created_at, updated_at',
-      )
-      .order('created_at', { ascending: false });
+    const loadWorkspace = async () => {
+      const { data: profileData, error: profileError } =
+        await supabase.rpc('get_staff_profile');
+      if (profileError) {
+        setBackendState('error');
+        return;
+      }
 
-    void request.then(({ data, error }) => {
+      const profile = profileData?.[0];
+      const nextStaffRole: StaffRole =
+        profile?.staff_role === 'hr' || profile?.staff_role === 'responder'
+          ? profile.staff_role
+          : null;
+      const nextResponderLabel = profile?.responder_label ?? '';
+      setStaffRole(nextStaffRole);
+      setResponderLabel(nextResponderLabel);
+      setRole(nextStaffRole ?? 'employee');
+
+      if (nextStaffRole === 'hr') {
+        const { data: responderData } = await supabase.rpc(
+          'list_unask_responders',
+        );
+        const labels = (responderData ?? [])
+          .map((item) => item.responder_label)
+          .filter((label): label is string => Boolean(label));
+        setAvailableResponders(labels);
+        setResponder(labels[0] ?? '');
+      }
+
+      const { data, error } = await supabase
+        .from('questions')
+        .select(
+          'id, question, detail, status, visibility, display_name, upvotes, dislikes, comments_count, responder_label, answer, created_at, updated_at',
+        )
+        .order('created_at', { ascending: false });
       if (error) {
         setBackendState('error');
         return;
@@ -247,15 +274,39 @@ export default function HomePage() {
       const liveQuestions = (data ?? []).map((row) =>
         rowToQuestion(row as PublicQuestionRow),
       );
-      setQuestions((current) => [
-        ...liveQuestions,
-        ...current.filter(
-          (question) =>
-            question.status !== 'Assigned' && question.status !== 'Answered',
-        ),
+      const threadKeys = Object.keys(sessionStorage).filter((key) =>
+        /^unask[.]thread[.]\d+$/.test(key),
+      );
+      const ownedQuestions = await Promise.all(
+        threadKeys.map(async (storageKey) => {
+          const id = Number(storageKey.slice('unask.thread.'.length));
+          const token = sessionStorage.getItem(storageKey);
+          if (!token || !Number.isSafeInteger(id)) return null;
+          const threadHash = await hashToken(token);
+          const { data: threadData } = await supabase.rpc(
+            'get_unask_question_thread',
+            { p_question_id: id, p_thread_hash: threadHash },
+          );
+          const row = threadData?.[0];
+          if (!row) return null;
+          return {
+            ...rowToQuestion(row as PublicQuestionRow),
+            privateReply: row.private_reply ?? undefined,
+            owned: true,
+            threadKey: token,
+          } satisfies Question;
+        }),
+      );
+      const recovered = ownedQuestions.filter(Boolean) as Question[];
+      const recoveredIds = new Set(recovered.map((question) => question.id));
+      setQuestions([
+        ...recovered,
+        ...liveQuestions.filter((question) => !recoveredIds.has(question.id)),
       ]);
       setBackendState('live');
-    });
+    };
+
+    void loadWorkspace();
   }, [auth]);
 
   const risks = useMemo(
@@ -267,8 +318,6 @@ export default function HomePage() {
     [draft, detail],
   );
 
-  const selected =
-    questions.find((question) => question.id === selectedId) ?? questions[0];
   const notify = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(''), 2600);
@@ -313,6 +362,9 @@ export default function HomePage() {
     setAuth('signin');
     setSessionId('');
     setRole('employee');
+    setStaffRole(null);
+    setResponderLabel('');
+    setAvailableResponders([]);
     setBackendState('connecting');
   };
 
@@ -322,43 +374,31 @@ export default function HomePage() {
     setSubmitting(true);
     const threadKey = `${randomToken('thr')}_${crypto.randomUUID().replaceAll('-', '')}`;
     const threadHash = await hashToken(threadKey);
-    const localId = Date.now();
-    const { error } = await supabase.from('questions').insert({
-      question: draft.trim(),
-      detail: detail.trim(),
-      visibility,
-      display_name:
+    const { data, error } = await supabase.rpc('submit_unask_question', {
+      p_question: draft.trim(),
+      p_detail: detail.trim(),
+      p_visibility: visibility,
+      p_display_name:
         visibility === 'named'
           ? displayName.trim() || 'Name entered by author'
-          : undefined,
-      thread_key: threadHash,
+          : '',
+      p_thread_hash: threadHash,
     });
+    const saved = data?.[0];
 
-    if (error) {
+    if (error || !saved) {
       setSubmitting(false);
       setBackendState('error');
       notify('The question could not be saved. Please try again.');
       return;
     }
 
-    sessionStorage.setItem(`unask.thread.${threadKey.slice(-6)}`, threadKey);
+    sessionStorage.setItem(`unask.thread.${saved.id}`, threadKey);
 
     const question: Question = {
-      id: localId,
-      question: draft.trim(),
-      detail: detail.trim() || 'No additional context was added.',
-      status: 'Under review',
-      age: 'Just now',
-      upvotes: 0,
-      dislikes: 0,
-      comments: 0,
+      ...rowToQuestion(saved as PublicQuestionRow),
       owned: true,
-      displayName:
-        visibility === 'named'
-          ? displayName.trim() || 'Name entered by author'
-          : undefined,
       threadKey,
-      persisted: true,
     };
     setQuestions((current) => [question, ...current]);
     setSelectedId(question.id);
@@ -417,15 +457,28 @@ export default function HomePage() {
     );
   };
 
-  const requestClarification = () => {
+  const requestClarification = async (id: number) => {
     if (!privateReply.trim()) return;
+    setWorkflowPending(true);
+    const reply = privateReply.trim();
+    const { error } = await supabase.rpc('moderate_unask_question', {
+      p_question_id: id,
+      p_action: 'clarify',
+      p_private_reply: reply,
+      p_responder_label: '',
+    });
+    setWorkflowPending(false);
+    if (error) {
+      notify('The private clarification could not be sent.');
+      return;
+    }
     setQuestions((current) =>
       current.map((question) =>
-        question.id === selected.id
+        question.id === id
           ? {
               ...question,
               status: 'Needs clarification',
-              privateReply: privateReply.trim(),
+              privateReply: reply,
             }
           : question,
       ),
@@ -434,21 +487,46 @@ export default function HomePage() {
     notify('Private clarification sent through the anonymous thread.');
   };
 
-  const closeQuestion = () => {
+  const closeQuestion = async (id: number) => {
+    setWorkflowPending(true);
+    const { error } = await supabase.rpc('moderate_unask_question', {
+      p_question_id: id,
+      p_action: 'close',
+      p_private_reply: '',
+      p_responder_label: '',
+    });
+    setWorkflowPending(false);
+    if (error) {
+      notify('The question could not be closed.');
+      return;
+    }
     setQuestions((current) =>
       current.map((question) =>
-        question.id === selected.id
-          ? { ...question, status: 'Closed' }
+        question.id === id
+          ? { ...question, status: 'Closed', responder: undefined }
           : question,
       ),
     );
     notify('Question closed privately.');
   };
 
-  const approveAndAssign = () => {
+  const approveAndAssign = async (id: number) => {
+    if (!responder) return;
+    setWorkflowPending(true);
+    const { error } = await supabase.rpc('moderate_unask_question', {
+      p_question_id: id,
+      p_action: 'assign',
+      p_private_reply: '',
+      p_responder_label: responder,
+    });
+    setWorkflowPending(false);
+    if (error) {
+      notify('The question could not be assigned.');
+      return;
+    }
     setQuestions((current) =>
       current.map((question) =>
-        question.id === selected.id
+        question.id === id
           ? { ...question, status: 'Assigned', responder }
           : question,
       ),
@@ -456,12 +534,23 @@ export default function HomePage() {
     notify(`Approved and assigned to ${responder.split(' · ')[0]}.`);
   };
 
-  const publishAnswer = (id: number) => {
+  const publishAnswer = async (id: number) => {
     if (!answer.trim()) return;
+    setWorkflowPending(true);
+    const publishedAnswer = answer.trim();
+    const { error } = await supabase.rpc('publish_unask_answer', {
+      p_question_id: id,
+      p_answer: publishedAnswer,
+    });
+    setWorkflowPending(false);
+    if (error) {
+      notify('The answer could not be published.');
+      return;
+    }
     setQuestions((current) =>
       current.map((question) =>
         question.id === id
-          ? { ...question, status: 'Answered', answer: answer.trim() }
+          ? { ...question, status: 'Answered', answer: publishedAnswer }
           : question,
       ),
     );
@@ -488,6 +577,7 @@ export default function HomePage() {
       <Header
         role={role}
         setRole={setRole}
+        staffRole={staffRole}
         sessionId={sessionId}
         signOut={signOut}
         backendState={backendState}
@@ -519,10 +609,11 @@ export default function HomePage() {
       {role === 'hr' && (
         <HrView
           questions={questions}
-          selected={selected}
           selectedId={selectedId}
           privateReply={privateReply}
           responder={responder}
+          responders={availableResponders}
+          pending={workflowPending}
           setSelectedId={setSelectedId}
           setPrivateReply={setPrivateReply}
           setResponder={setResponder}
@@ -534,9 +625,10 @@ export default function HomePage() {
       {role === 'responder' && (
         <ResponderView
           questions={questions}
-          selected={selected}
           selectedId={selectedId}
           answer={answer}
+          responderLabel={responderLabel}
+          pending={workflowPending}
           setSelectedId={setSelectedId}
           setAnswer={setAnswer}
           publishAnswer={publishAnswer}
@@ -646,12 +738,14 @@ function AuthMock({
 function Header({
   role,
   setRole,
+  staffRole,
   sessionId,
   signOut,
   backendState,
 }: {
   role: Role;
   setRole: (role: Role) => void;
+  staffRole: StaffRole;
   sessionId: string;
   signOut: () => void;
   backendState: 'connecting' | 'live' | 'error';
@@ -660,15 +754,17 @@ function Header({
     <header className="unask-header">
       <Brand />
       <div className="prototype-role">
-        <label htmlFor="prototype-role">Prototype view</label>
+        <label htmlFor="workspace-role">Workspace</label>
         <select
-          id="prototype-role"
+          id="workspace-role"
           value={role}
           onChange={(event) => setRole(event.target.value as Role)}
         >
           <option value="employee">Employee</option>
-          <option value="hr">HR Admin</option>
-          <option value="responder">Responder</option>
+          {staffRole === 'hr' && <option value="hr">HR Admin</option>}
+          {staffRole === 'responder' && (
+            <option value="responder">Responder</option>
+          )}
         </select>
       </div>
       <div className="session-state">
@@ -943,16 +1039,17 @@ function QuestionRow({
 
 type HrProps = {
   questions: Question[];
-  selected: Question;
   selectedId: number;
   privateReply: string;
   responder: string;
+  responders: string[];
+  pending: boolean;
   setSelectedId: (id: number) => void;
   setPrivateReply: (value: string) => void;
   setResponder: (value: string) => void;
-  requestClarification: () => void;
-  closeQuestion: () => void;
-  approveAndAssign: () => void;
+  requestClarification: (id: number) => void;
+  closeQuestion: (id: number) => void;
+  approveAndAssign: (id: number) => void;
 };
 function HrView(props: HrProps) {
   const queue = props.questions.filter(
@@ -960,6 +1057,8 @@ function HrView(props: HrProps) {
       question.status === 'Under review' ||
       question.status === 'Needs clarification',
   );
+  const selected =
+    queue.find((question) => question.id === props.selectedId) ?? queue[0];
   return (
     <div className="workspace-page page-shell">
       <header className="workspace-heading">
@@ -997,17 +1096,18 @@ function HrView(props: HrProps) {
             </button>
           ))}
         </aside>
-        <section className="work-detail">
+        {selected ? (
+          <section className="work-detail">
           <div className="record-meta">
-            <span>{questionReference(props.selected)}</span>
+            <span>{questionReference(selected)}</span>
             <span
-              className={`status status-${props.selected.status.toLowerCase().replaceAll(' ', '-')}`}
+              className={`status status-${selected.status.toLowerCase().replaceAll(' ', '-')}`}
             >
-              {props.selected.status}
+              {selected.status}
             </span>
           </div>
-          <h2>{props.selected.question}</h2>
-          <blockquote>{props.selected.detail}</blockquote>
+          <h2>{selected.question}</h2>
+          <blockquote>{selected.detail}</blockquote>
           <div className="privacy-boundary">
             <ShieldCheck />
             <span>
@@ -1027,10 +1127,10 @@ function HrView(props: HrProps) {
             <Button
               type="button"
               variant="outline"
-              disabled={!props.privateReply.trim()}
-              onClick={props.requestClarification}
+              disabled={!props.privateReply.trim() || props.pending}
+              onClick={() => props.requestClarification(selected.id)}
             >
-              Send privately
+              {props.pending ? 'Saving…' : 'Send privately'}
             </Button>
           </div>
           <div className="assignment-row">
@@ -1040,25 +1140,40 @@ function HrView(props: HrProps) {
               value={props.responder}
               onChange={(event) => props.setResponder(event.target.value)}
             >
-              {responders.map((item) => (
+              {props.responders.map((item) => (
                 <option key={item}>{item}</option>
               ))}
+              {props.responders.length === 0 && (
+                <option value="">No responders configured</option>
+              )}
             </select>
           </div>
           <footer className="decision-row">
             <button
               type="button"
               className="close-action"
-              onClick={props.closeQuestion}
+              disabled={props.pending}
+              onClick={() => props.closeQuestion(selected.id)}
             >
               Reject or close
             </button>
-            <Button type="button" onClick={props.approveAndAssign}>
-              Approve and assign
+            <Button
+              type="button"
+              disabled={!props.responder || props.pending}
+              onClick={() => props.approveAndAssign(selected.id)}
+            >
+              {props.pending ? 'Saving…' : 'Approve and assign'}
               <ArrowRight />
             </Button>
           </footer>
-        </section>
+          </section>
+        ) : (
+          <section className="work-detail empty-work-state">
+            <ShieldCheck />
+            <h2>The moderation queue is clear.</h2>
+            <p>New employee questions will appear here for private review.</p>
+          </section>
+        )}
       </div>
     </div>
   );
@@ -1066,9 +1181,10 @@ function HrView(props: HrProps) {
 
 type ResponderProps = {
   questions: Question[];
-  selected: Question;
   selectedId: number;
   answer: string;
+  responderLabel: string;
+  pending: boolean;
   setSelectedId: (id: number) => void;
   setAnswer: (value: string) => void;
   publishAnswer: (id: number) => void;
@@ -1076,12 +1192,11 @@ type ResponderProps = {
 function ResponderView(props: ResponderProps) {
   const assigned = props.questions.filter(
     (question) =>
-      question.status === 'Assigned' && question.responder?.startsWith('Maya'),
+      question.status === 'Assigned' &&
+      question.responder === props.responderLabel,
   );
   const selected =
-    assigned.find((question) => question.id === props.selectedId) ??
-    assigned[0] ??
-    props.selected;
+    assigned.find((question) => question.id === props.selectedId) ?? assigned[0];
   return (
     <div className="workspace-page page-shell">
       <header className="workspace-heading">
@@ -1095,7 +1210,7 @@ function ResponderView(props: ResponderProps) {
         </div>
         <span>
           <UserRoundCheck />
-          Maya · People Leadership
+          {props.responderLabel || 'Responder'}
         </span>
       </header>
       <div className="work-layout">
@@ -1117,7 +1232,8 @@ function ResponderView(props: ResponderProps) {
             </button>
           ))}
         </aside>
-        <section className="work-detail response-work">
+        {selected ? (
+          <section className="work-detail response-work">
           <div className="record-meta">
             <span>{questionReference(selected)}</span>
             <span className="status status-assigned">Assigned</span>
@@ -1149,14 +1265,21 @@ function ResponderView(props: ResponderProps) {
             </span>
             <Button
               type="button"
-              disabled={!props.answer.trim()}
+              disabled={!props.answer.trim() || props.pending}
               onClick={() => props.publishAnswer(selected.id)}
             >
-              Publish answer
+              {props.pending ? 'Publishing…' : 'Publish answer'}
               <ArrowRight />
             </Button>
           </footer>
-        </section>
+          </section>
+        ) : (
+          <section className="work-detail empty-work-state">
+            <UserRoundCheck />
+            <h2>No questions are assigned to you.</h2>
+            <p>Questions will appear here after HR approves and routes them.</p>
+          </section>
+        )}
       </div>
     </div>
   );

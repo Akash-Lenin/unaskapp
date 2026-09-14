@@ -197,14 +197,23 @@ Recorded commits:
 
 The Sites source branch contains the final commit.
 
+## Durable Staff Workflow Update (2026-09-14)
+
+- Connected HR clarification, closure, and assignment actions to Supabase.
+- Connected responder answer publication to Supabase.
+- Replaced the unrestricted role-preview selector with role-aware navigation derived from trusted staff authorization.
+- Moved anonymous thread hashes and private replies out of `public.questions` into `private.question_threads`.
+- Added capability-based author thread recovery without storing author identity.
+- Added private audit events for HR and responder actions.
+- Revoked browser-side direct inserts and updates on questions; guarded RPCs now own those writes.
+- Added the migration in `supabase/migrations/20260914060040_durable_staff_workflows.sql`.
+
 ## Known Gaps and Risks
 
-- Employee submissions and votes persist in Supabase; HR/responder preview actions are still local-only.
-- Role switching is a demonstration control, not authentication. Database staff writes require trusted `app_metadata.unask_role` claims and responder assignments.
+- Staff identities still need to be assigned to `private.staff_roles` before HR and responder workspaces appear for those users.
 - Google OAuth is implemented in the app and RLS. The Supabase Google provider still requires a Google OAuth client ID and secret, plus the Railway redirect URL, before live sign-in can complete.
 - Anonymous submission rows do not store employee identity, and public database access excludes private thread fields. The complete anonymity threat model still needs formal review.
-- The moderation audit table now exists, but workflow triggers and the HR UI are not connected yet.
-- The private thread table exists, but moving the current protected thread-hash intake into it requires a separately reviewed backend/RPC migration.
+- Existing questions created without a recovery capability cannot receive a private clarification; they can still be assigned or closed.
 - There is no rate limiting, abuse prevention, notification system, or analytics pipeline.
 - The privacy phrase detection is regex-based and intentionally lightweight.
 - The visible product and metadata now use **Unask**.
@@ -216,10 +225,9 @@ The highest-value next step is to convert the prototype into a durable, role-sec
 
 1. Confirm whether the visible brand should be **Unask** everywhere.
 2. Define the production anonymity model and threat boundaries before collecting real feedback.
-3. Replace the SSO mock with production company authentication and issue trusted HR/responder role claims.
-4. Connect moderation, private clarification, assignments, and published responses to Supabase.
-5. Add moderation and abuse safeguards.
-6. Run browser-based visual and interaction QA across desktop and mobile.
+3. Assign trusted HR/responder roles to the intended Everstage accounts.
+4. Add moderation and abuse safeguards.
+5. Run browser-based visual and interaction QA across desktop and mobile.
 
 ## How to Resume Development
 

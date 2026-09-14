@@ -1289,6 +1289,28 @@
   width: 16px;
   height: 16px;
 }
+.empty-work-state {
+  min-height: 360px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  text-align: center;
+}
+.empty-work-state > svg {
+  width: 40px;
+  height: 40px;
+  color: var(--md-secondary);
+}
+.empty-work-state h2 {
+  margin-top: 18px;
+}
+.empty-work-state p {
+  max-width: 420px;
+  margin-top: 10px;
+  color: var(--md-on-surface-variant);
+  font-size: 14px;
+  line-height: 1.6;
+}
 
 /* Snackbar */
 .toast {
