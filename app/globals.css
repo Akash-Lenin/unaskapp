@@ -576,7 +576,7 @@
   z-index: 40;
   min-height: 72px;
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: 1fr auto auto;
   align-items: center;
   gap: 24px;
   padding: 12px max(20px, calc((100% - 1080px) / 2));
@@ -587,6 +587,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  justify-self: end;
 }
 .prototype-role label {
   color: var(--md-on-surface-variant);
@@ -768,53 +769,18 @@
   padding: 12px 12px 12px 20px;
   background: var(--md-surface-container);
 }
-.visibility-choice {
+.anonymous-only-label {
   display: flex;
   align-items: center;
-}
-.visibility-choice > span {
-  margin-right: 12px;
+  gap: 8px;
   color: var(--md-on-surface-variant);
   font-size: 12px;
-}
-.visibility-choice button {
-  min-height: 40px;
-  padding: 0 18px;
-  border: 1px solid var(--md-outline);
-  background: transparent;
-  color: var(--md-on-surface-variant);
-  font-size: 13px;
   font-weight: 600;
-  transition:
-    background-color var(--md-duration-short) var(--md-ease-standard),
-    color var(--md-duration-short) var(--md-ease-standard);
 }
-.visibility-choice button:first-of-type {
-  border-radius: var(--md-shape-full) 0 0 var(--md-shape-full);
-}
-.visibility-choice button:last-of-type {
-  border-left: 0;
-  border-radius: 0 var(--md-shape-full) var(--md-shape-full) 0;
-}
-.visibility-choice button:hover {
-  background: color-mix(in oklab, var(--md-on-surface) 8%, transparent);
-}
-.visibility-choice button.active {
-  background: var(--md-secondary-container);
-  color: var(--md-on-secondary-container);
-}
-.name-input {
-  min-width: 200px;
-  height: 44px;
-  padding: 0 16px;
-  border: 1px solid var(--md-outline);
-  border-radius: var(--md-shape-full);
-  background: var(--md-surface-container-lowest);
-  color: var(--md-on-surface);
-  font-size: 13px;
-}
-.name-input::placeholder {
-  color: var(--md-on-surface-variant);
+.anonymous-only-label svg {
+  width: 16px;
+  height: 16px;
+  color: var(--md-secondary);
 }
 .editor > footer [data-slot='button'] {
   margin-left: auto;
@@ -1058,6 +1024,11 @@
   background: var(--md-primary-container);
   color: var(--md-on-primary-container);
 }
+.question-detail > footer button.vote-active,
+.question-detail > footer button.thoughts-active {
+  background: var(--md-secondary-container);
+  color: var(--md-on-secondary-container);
+}
 .question-detail > footer button:disabled {
   cursor: not-allowed;
   opacity: 0.38;
@@ -1065,6 +1036,63 @@
 .question-detail > footer svg {
   width: 16px;
   height: 16px;
+}
+.thoughts-panel {
+  max-width: 780px;
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--md-shape-lg);
+  background: var(--md-surface-container-lowest);
+}
+.thoughts-heading strong,
+.thoughts-heading span {
+  display: block;
+}
+.thoughts-heading strong {
+  color: var(--md-on-surface);
+  font-size: 14px;
+}
+.thoughts-heading span,
+.thoughts-empty {
+  margin-top: 4px;
+  color: var(--md-on-surface-variant);
+  font-size: 12px;
+}
+.thought-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+.thought-list article {
+  padding: 12px 14px;
+  border-radius: var(--md-shape-md);
+  background: var(--md-surface-container-low);
+}
+.thought-list p {
+  color: var(--md-on-surface);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.thought-list span {
+  display: block;
+  margin-top: 6px;
+  color: var(--md-on-surface-variant);
+  font-size: 11px;
+}
+.thoughts-empty {
+  padding: 14px 0 2px;
+}
+.thought-composer {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 10px;
+  margin-top: 14px;
+}
+.thought-composer [data-slot='textarea'] {
+  min-height: 82px;
+  resize: vertical;
 }
 
 /* ---------------------------------------------------------------------------
@@ -1392,10 +1420,10 @@
     margin-left: 0;
     justify-content: space-between;
   }
-  .visibility-choice {
-    flex-wrap: wrap;
+  .thought-composer {
+    grid-template-columns: 1fr;
   }
-  .name-input {
+  .thought-composer [data-slot='button'] {
     width: 100%;
   }
   .search-box {

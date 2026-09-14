@@ -137,6 +137,10 @@ export type Database = {
         Args: Record<PropertyKey, never>;
         Returns: { responder_label: string | null }[];
       };
+      list_my_unask_votes: {
+        Args: Record<PropertyKey, never>;
+        Returns: { direction: string; question_id: number }[];
+      };
       moderate_unask_question: {
         Args: {
           p_action: string;
@@ -149,6 +153,23 @@ export type Database = {
       publish_unask_answer: {
         Args: { p_answer: string; p_question_id: number };
         Returns: undefined;
+      };
+      set_unask_vote: {
+        Args: { p_direction: string; p_question_id: number };
+        Returns: {
+          dislikes: number;
+          my_vote: string | null;
+          upvotes: number;
+        }[];
+      };
+      submit_unask_thought: {
+        Args: { p_body: string; p_question_id: number };
+        Returns: {
+          body: string;
+          created_at: string;
+          id: number;
+          question_id: number;
+        }[];
       };
       submit_unask_question: {
         Args: {

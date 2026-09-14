@@ -9,6 +9,8 @@ Project: `kykvxhbinrduankuvplm`
 - `private.question_threads` stores hashed thread capabilities and private replies. Authors recover only their own thread by presenting the matching capability through a guarded RPC.
 - `private.staff_roles` stores identities only for HR moderators and named responders.
 - `private.question_audit_events` stores staff moderation events only. Employee submissions and votes must never be written here.
+- `private.question_votes` stores one per-question pseudonymous vote marker and direction. It stores no email or employee ID and is never exposed to browser roles.
+- `private.question_vote_baselines` preserves aggregate totals that existed before individual vote state was introduced.
 
 ## Access rules
 
@@ -24,9 +26,11 @@ Project: `kykvxhbinrduankuvplm`
 ## Operational notes
 
 - Add staff by writing an Everstage Auth user ID and role to `private.staff_roles`. Responders also require a unique, human-readable `responder_label` that HR can assign to questions.
-- Question submission and voting use explicitly granted RPCs. Direct inserts and updates on `public.questions` are denied to browser sessions.
+- Question submission, voting, and thought creation use explicitly granted RPCs. Direct inserts and updates on `public.questions` are denied to browser sessions.
+- New questions are always anonymous. The historic visibility and display-name columns remain for schema compatibility, but the submission RPC rejects named submissions.
+- Votes toggle on/off and may be changed between up and down; each employee can have at most one vote per question.
 - Employee submissions and votes never create staff audit events.
-- `questions.comments_count` is not yet synchronized from `question_thoughts`; add that trigger when the UI starts using the thoughts table.
+- `questions.comments_count` is synchronized from published `question_thoughts` by a database trigger.
 
 ## Durable workflow RPCs
 
@@ -36,3 +40,6 @@ Project: `kykvxhbinrduankuvplm`
 - `list_unask_responders` returns configured responders to HR only.
 - `moderate_unask_question` performs audited clarification, assignment, and closure actions for HR.
 - `publish_unask_answer` performs audited answer publication for the assigned responder.
+- `set_unask_vote` toggles or changes the current employee's pseudonymous vote.
+- `list_my_unask_votes` restores only the current employee's vote state.
+- `submit_unask_thought` adds an anonymous thought to a published question.

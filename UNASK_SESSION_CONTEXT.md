@@ -38,10 +38,10 @@ The header provides a **Preview as** control for switching among Employee, HR Ad
 - Filter by All, Open, or Answered.
 - Search question text and categories.
 - Select a question to inspect its answer or response status.
-- Upvote or downvote a question.
-- Add an anonymous thought to the selected question.
+- Upvote or downvote a question once, change the vote, or toggle it off.
+- Open a question's thoughts, read them, and add an anonymous thought.
 - Open the anonymous question composer.
-- Select a topic and submit a new question.
+- Submit a new anonymous question. To identify themselves voluntarily, employees can include a name in the message body.
 - Receive an on-screen success confirmation.
 
 ### Privacy guidance in the composer

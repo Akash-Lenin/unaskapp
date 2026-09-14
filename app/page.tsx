@@ -32,8 +32,13 @@ type Status =
   | 'Assigned'
   | 'Answered'
   | 'Closed';
-type Visibility = 'anonymous' | 'named';
 type AuthState = 'checking' | 'signin' | 'denied' | 'app';
+type VoteDirection = 'up' | 'down';
+type Thought = {
+  id: number;
+  body: string;
+  age: string;
+};
 type Question = {
   id: number;
   question: string;
@@ -47,7 +52,7 @@ type Question = {
   answer?: string;
   privateReply?: string;
   owned?: boolean;
-  displayName?: string;
+  myVote?: VoteDirection;
   threadKey?: string;
   persisted?: boolean;
 };
@@ -165,7 +170,6 @@ function rowToQuestion(row: PublicQuestionRow): Question {
     comments: row.comments_count,
     responder: row.responder_label ?? undefined,
     answer: row.answer ?? undefined,
-    displayName: row.display_name ?? undefined,
     persisted: true,
   };
 }
@@ -183,8 +187,16 @@ export default function HomePage() {
   const [selectedId, setSelectedId] = useState(2829);
   const [draft, setDraft] = useState('');
   const [detail, setDetail] = useState('');
-  const [visibility, setVisibility] = useState<Visibility>('anonymous');
-  const [displayName, setDisplayName] = useState('');
+  const [thoughtsByQuestion, setThoughtsByQuestion] = useState<
+    Record<number, Thought[]>
+  >({});
+  const [thoughtsLoadingId, setThoughtsLoadingId] = useState<number | null>(
+    null,
+  );
+  const [thoughtSubmittingId, setThoughtSubmittingId] = useState<number | null>(
+    null,
+  );
+  const [votePendingId, setVotePendingId] = useState<number | null>(null);
   const [search, setSearch] = useState('');
   const [answer, setAnswer] = useState('');
   const [privateReply, setPrivateReply] = useState('');
@@ -271,9 +283,23 @@ export default function HomePage() {
         return;
       }
 
-      const liveQuestions = (data ?? []).map((row) =>
-        rowToQuestion(row as PublicQuestionRow),
+      const { data: voteData, error: voteError } = await supabase.rpc(
+        'list_my_unask_votes',
       );
+      if (voteError) {
+        setBackendState('error');
+        return;
+      }
+      const myVotes = new Map<number, VoteDirection>(
+        (voteData ?? []).map((vote) => [
+          vote.question_id,
+          vote.direction as VoteDirection,
+        ]),
+      );
+      const liveQuestions = (data ?? []).map((row) => {
+        const question = rowToQuestion(row as PublicQuestionRow);
+        return { ...question, myVote: myVotes.get(question.id) };
+      });
       const threadKeys = Object.keys(sessionStorage).filter((key) =>
         /^unask[.]thread[.]\d+$/.test(key),
       );
@@ -293,6 +319,7 @@ export default function HomePage() {
             ...rowToQuestion(row as PublicQuestionRow),
             privateReply: row.private_reply ?? undefined,
             owned: true,
+            myVote: myVotes.get(id),
             threadKey: token,
           } satisfies Question;
         }),
@@ -377,11 +404,8 @@ export default function HomePage() {
     const { data, error } = await supabase.rpc('submit_unask_question', {
       p_question: draft.trim(),
       p_detail: detail.trim(),
-      p_visibility: visibility,
-      p_display_name:
-        visibility === 'named'
-          ? displayName.trim() || 'Name entered by author'
-          : '',
+      p_visibility: 'anonymous',
+      p_display_name: '',
       p_thread_hash: threadHash,
     });
     const saved = data?.[0];
@@ -405,8 +429,6 @@ export default function HomePage() {
     setExpandedId(question.id);
     setDraft('');
     setDetail('');
-    setDisplayName('');
-    setVisibility('anonymous');
     setSubmitting(false);
     setBackendState('live');
     notify(
@@ -414,36 +436,48 @@ export default function HomePage() {
     );
   };
 
-  const vote = async (id: number, direction: 'up' | 'down') => {
+  const vote = async (id: number, direction: VoteDirection) => {
+    if (votePendingId === id) return;
     const previous = questions.find((question) => question.id === id);
     if (!previous) return;
     if (previous.status !== 'Assigned' && previous.status !== 'Answered') {
       notify('Voting opens after HR publishes the question.');
       return;
     }
+    setVotePendingId(id);
+    const nextVote = previous.myVote === direction ? undefined : direction;
     setQuestions((current) =>
       current.map((question) =>
         question.id === id
           ? {
               ...question,
-              upvotes: question.upvotes + (direction === 'up' ? 1 : 0),
-              dislikes: question.dislikes + (direction === 'down' ? 1 : 0),
+              upvotes:
+                question.upvotes +
+                (nextVote === 'up' ? 1 : 0) -
+                (question.myVote === 'up' ? 1 : 0),
+              dislikes:
+                question.dislikes +
+                (nextVote === 'down' ? 1 : 0) -
+                (question.myVote === 'down' ? 1 : 0),
+              myVote: nextVote,
             }
           : question,
       ),
     );
-    const { data, error } = await supabase.rpc('vote_question', {
+    const { data, error } = await supabase.rpc('set_unask_vote', {
       p_question_id: id,
       p_direction: direction,
     });
     const totals = data?.[0];
     if (error || !totals) {
+      setVotePendingId(null);
       setQuestions((current) =>
         current.map((question) => (question.id === id ? previous : question)),
       );
       notify('That vote could not be saved. Please try again.');
       return;
     }
+    setVotePendingId(null);
     setQuestions((current) =>
       current.map((question) =>
         question.id === id
@@ -451,10 +485,59 @@ export default function HomePage() {
               ...question,
               upvotes: totals.upvotes,
               dislikes: totals.dislikes,
+              myVote: (totals.my_vote as VoteDirection | null) ?? undefined,
             }
           : question,
       ),
     );
+  };
+
+  const loadThoughts = async (questionId: number) => {
+    setThoughtsLoadingId(questionId);
+    const { data, error } = await supabase
+      .from('question_thoughts')
+      .select('id, body, created_at')
+      .eq('question_id', questionId)
+      .eq('status', 'published')
+      .order('created_at', { ascending: true });
+    setThoughtsLoadingId(null);
+    if (error) {
+      notify('Thoughts could not be loaded. Please try again.');
+      return;
+    }
+    const thoughts = (data ?? []).map((thought) => ({
+      id: thought.id,
+      body: thought.body,
+      age: relativeAge(thought.created_at),
+    }));
+    setThoughtsByQuestion((current) => ({
+      ...current,
+      [questionId]: thoughts,
+    }));
+  };
+
+  const submitThought = async (questionId: number, body: string) => {
+    if (!body.trim() || thoughtSubmittingId === questionId) return false;
+    setThoughtSubmittingId(questionId);
+    const { error } = await supabase.rpc('submit_unask_thought', {
+      p_question_id: questionId,
+      p_body: body.trim(),
+    });
+    setThoughtSubmittingId(null);
+    if (error) {
+      notify('That thought could not be saved. Please try again.');
+      return false;
+    }
+    await loadThoughts(questionId);
+    setQuestions((current) =>
+      current.map((question) =>
+        question.id === questionId
+          ? { ...question, comments: question.comments + 1 }
+          : question,
+      ),
+    );
+    notify('Your anonymous thought was added.');
+    return true;
   };
 
   const requestClarification = async (id: number) => {
@@ -590,19 +673,21 @@ export default function HomePage() {
           questions={questions}
           draft={draft}
           detail={detail}
-          visibility={visibility}
-          displayName={displayName}
+          thoughtsByQuestion={thoughtsByQuestion}
+          thoughtsLoadingId={thoughtsLoadingId}
+          thoughtSubmittingId={thoughtSubmittingId}
+          votePendingId={votePendingId}
           search={search}
           risks={risks}
           expandedId={expandedId}
           setDraft={setDraft}
           setDetail={setDetail}
-          setVisibility={setVisibility}
-          setDisplayName={setDisplayName}
           setSearch={setSearch}
           setExpandedId={setExpandedId}
           submit={submitQuestion}
           vote={vote}
+          loadThoughts={loadThoughts}
+          submitThought={submitThought}
           submitting={submitting}
         />
       )}
@@ -710,8 +795,8 @@ function AuthMock({
             </form>
             <div className="auth-note">
               <LockKeyhole />
-              Google verifies company membership. Your identity is never written
-              to a question, vote, or anonymous thread.
+              Google verifies company membership. Feedback omits your email and
+              employee ID; voting uses a one-per-question pseudonymous marker.
             </div>
           </div>
         )}
@@ -753,20 +838,6 @@ function Header({
   return (
     <header className="unask-header">
       <Brand />
-      <div className="prototype-role">
-        <label htmlFor="workspace-role">Workspace</label>
-        <select
-          id="workspace-role"
-          value={role}
-          onChange={(event) => setRole(event.target.value as Role)}
-        >
-          <option value="employee">Employee</option>
-          {staffRole === 'hr' && <option value="hr">HR Admin</option>}
-          {staffRole === 'responder' && (
-            <option value="responder">Responder</option>
-          )}
-        </select>
-      </div>
       <div className="session-state">
         <EyeOff />
         <span>
@@ -780,6 +851,20 @@ function Header({
         <button type="button" onClick={signOut} aria-label="End test session">
           <LogOut />
         </button>
+      </div>
+      <div className="prototype-role">
+        <label htmlFor="workspace-role">Workspace</label>
+        <select
+          id="workspace-role"
+          value={role}
+          onChange={(event) => setRole(event.target.value as Role)}
+        >
+          <option value="employee">Employee</option>
+          {staffRole === 'hr' && <option value="hr">HR Admin</option>}
+          {staffRole === 'responder' && (
+            <option value="responder">Responder</option>
+          )}
+        </select>
       </div>
     </header>
   );
@@ -796,8 +881,10 @@ function ProofStrip({
     <div className="proof-strip">
       <ShieldCheck />
       <span>
-        <strong>Verified Everstage access.</strong> Your email stays at the
-        access gate and is not stored with question session{' '}
+        <strong>Verified Everstage access.</strong> Google and Supabase Auth
+        keep your email and profile for sign-in. Questions and thoughts do not
+        store your email or employee ID. Voting uses a per-question pseudonymous
+        marker, and anonymous thread recovery uses browser-held session{' '}
         {sessionId.slice(0, 8)}••••.
       </span>
       <button type="button" onClick={close}>
@@ -811,19 +898,21 @@ type EmployeeProps = {
   questions: Question[];
   draft: string;
   detail: string;
-  visibility: Visibility;
-  displayName: string;
+  thoughtsByQuestion: Record<number, Thought[]>;
+  thoughtsLoadingId: number | null;
+  thoughtSubmittingId: number | null;
+  votePendingId: number | null;
   search: string;
   risks: string[];
   expandedId: number | null;
   setDraft: (value: string) => void;
   setDetail: (value: string) => void;
-  setVisibility: (value: Visibility) => void;
-  setDisplayName: (value: string) => void;
   setSearch: (value: string) => void;
   setExpandedId: (value: number | null) => void;
   submit: (event: SyntheticEvent<HTMLFormElement>) => void;
-  vote: (id: number, direction: 'up' | 'down') => void;
+  vote: (id: number, direction: VoteDirection) => void;
+  loadThoughts: (questionId: number) => Promise<void>;
+  submitThought: (questionId: number, body: string) => Promise<boolean>;
   submitting: boolean;
 };
 
@@ -876,32 +965,9 @@ function EmployeeView(props: EmployeeProps) {
             </div>
           )}
           <footer>
-            <div className="visibility-choice">
-              <span>Show this as</span>
-              <button
-                type="button"
-                className={props.visibility === 'anonymous' ? 'active' : ''}
-                onClick={() => props.setVisibility('anonymous')}
-              >
-                Anonymous
-              </button>
-              <button
-                type="button"
-                className={props.visibility === 'named' ? 'active' : ''}
-                onClick={() => props.setVisibility('named')}
-              >
-                With a name
-              </button>
-            </div>
-            {props.visibility === 'named' && (
-              <input
-                className="name-input"
-                value={props.displayName}
-                onChange={(event) => props.setDisplayName(event.target.value)}
-                placeholder="Enter a display name"
-                aria-label="Display name"
-              />
-            )}
+            <span className="anonymous-only-label">
+              <EyeOff /> Submitted anonymously
+            </span>
             <Button
               type="submit"
               disabled={!props.draft.trim() || props.submitting}
@@ -912,8 +978,8 @@ function EmployeeView(props: EmployeeProps) {
           </footer>
         </form>
         <p className="editor-footnote">
-          <LockKeyhole />A separate private recovery key stays in this browser
-          tab. The question row contains no email or employee ID.
+          <LockKeyhole />A private recovery key stays in this browser tab. If
+          you want to identify yourself, include your name in the message body.
         </p>
       </section>
       <section className="feed-section">
@@ -943,6 +1009,12 @@ function EmployeeView(props: EmployeeProps) {
                 )
               }
               vote={props.vote}
+              thoughts={props.thoughtsByQuestion[question.id]}
+              thoughtsLoading={props.thoughtsLoadingId === question.id}
+              thoughtSubmitting={props.thoughtSubmittingId === question.id}
+              votePending={props.votePendingId === question.id}
+              loadThoughts={() => props.loadThoughts(question.id)}
+              submitThought={(body) => props.submitThought(question.id, body)}
             />
           ))}
         </div>
@@ -956,12 +1028,38 @@ function QuestionRow({
   expanded,
   toggle,
   vote,
+  thoughts,
+  thoughtsLoading,
+  thoughtSubmitting,
+  votePending,
+  loadThoughts,
+  submitThought,
 }: {
   question: Question;
   expanded: boolean;
   toggle: () => void;
-  vote: (id: number, direction: 'up' | 'down') => void;
+  vote: (id: number, direction: VoteDirection) => void;
+  thoughts: Thought[] | undefined;
+  thoughtsLoading: boolean;
+  thoughtSubmitting: boolean;
+  votePending: boolean;
+  loadThoughts: () => Promise<void>;
+  submitThought: (body: string) => Promise<boolean>;
 }) {
+  const [showThoughts, setShowThoughts] = useState(false);
+  const [thoughtDraft, setThoughtDraft] = useState('');
+
+  const toggleThoughts = () => {
+    const opening = !showThoughts;
+    setShowThoughts(opening);
+    if (opening && thoughts === undefined) void loadThoughts();
+  };
+
+  const addThought = async (event: SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (await submitThought(thoughtDraft)) setThoughtDraft('');
+  };
+
   return (
     <article className={`question-row ${expanded ? 'expanded' : ''}`}>
       <button type="button" className="question-main" onClick={toggle}>
@@ -976,12 +1074,7 @@ function QuestionRow({
           )}
         </div>
         <h3>{question.question}</h3>
-        <p>
-          {question.displayName
-            ? `${question.displayName} · name entered by author`
-            : 'Anonymous'}{' '}
-          · {question.age}
-        </p>
+        <p>Anonymous · {question.age}</p>
         <ChevronRight />
       </button>
       {expanded && (
@@ -1009,9 +1102,14 @@ function QuestionRow({
             <button
               type="button"
               disabled={
-                question.status !== 'Assigned' && question.status !== 'Answered'
+                votePending ||
+                (question.status !== 'Assigned' &&
+                  question.status !== 'Answered')
               }
               onClick={() => vote(question.id, 'up')}
+              className={question.myVote === 'up' ? 'vote-active' : ''}
+              aria-pressed={question.myVote === 'up'}
+              aria-label="Upvote this question"
             >
               <ThumbsUp />
               {question.upvotes}
@@ -1019,18 +1117,71 @@ function QuestionRow({
             <button
               type="button"
               disabled={
-                question.status !== 'Assigned' && question.status !== 'Answered'
+                votePending ||
+                (question.status !== 'Assigned' &&
+                  question.status !== 'Answered')
               }
               onClick={() => vote(question.id, 'down')}
+              className={question.myVote === 'down' ? 'vote-active' : ''}
+              aria-pressed={question.myVote === 'down'}
+              aria-label="Downvote this question"
             >
               <ThumbsDown />
               {question.dislikes}
             </button>
-            <span>
+            <button
+              type="button"
+              className={showThoughts ? 'thoughts-active' : ''}
+              onClick={toggleThoughts}
+              aria-expanded={showThoughts}
+              aria-controls={`thoughts-${question.id}`}
+            >
               <MessageCircle />
               {question.comments} thoughts
-            </span>
+            </button>
           </footer>
+          {showThoughts && (
+            <section className="thoughts-panel" id={`thoughts-${question.id}`}>
+              <div className="thoughts-heading">
+                <div>
+                  <strong>Anonymous thoughts</strong>
+                  <span>Add context without attaching your identity.</span>
+                </div>
+              </div>
+              {thoughtsLoading ? (
+                <p className="thoughts-empty">Loading thoughts…</p>
+              ) : thoughts && thoughts.length > 0 ? (
+                <div className="thought-list">
+                  {thoughts.map((thought) => (
+                    <article key={thought.id}>
+                      <p>{thought.body}</p>
+                      <span>Anonymous · {thought.age}</span>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="thoughts-empty">
+                  No thoughts yet. Add the first useful perspective.
+                </p>
+              )}
+              <form className="thought-composer" onSubmit={addThought}>
+                <Textarea
+                  value={thoughtDraft}
+                  onChange={(event) => setThoughtDraft(event.target.value)}
+                  placeholder="Add an anonymous thought…"
+                  aria-label="Anonymous thought"
+                  maxLength={2000}
+                />
+                <Button
+                  type="submit"
+                  disabled={!thoughtDraft.trim() || thoughtSubmitting}
+                >
+                  {thoughtSubmitting ? 'Adding…' : 'Add thought'}
+                  <Send />
+                </Button>
+              </form>
+            </section>
+          )}
         </div>
       )}
     </article>
@@ -1098,74 +1249,74 @@ function HrView(props: HrProps) {
         </aside>
         {selected ? (
           <section className="work-detail">
-          <div className="record-meta">
-            <span>{questionReference(selected)}</span>
-            <span
-              className={`status status-${selected.status.toLowerCase().replaceAll(' ', '-')}`}
-            >
-              {selected.status}
-            </span>
-          </div>
-          <h2>{selected.question}</h2>
-          <blockquote>{selected.detail}</blockquote>
-          <div className="privacy-boundary">
-            <ShieldCheck />
-            <span>
-              <strong>What HR can see</strong>Question, context, activity, and
-              private thread. No email, employee ID, IP address, or device
-              details.
-            </span>
-          </div>
-          <div className="moderation-section">
-            <label htmlFor="private-reply">Need more information?</label>
-            <Textarea
-              id="private-reply"
-              value={props.privateReply}
-              onChange={(event) => props.setPrivateReply(event.target.value)}
-              placeholder="Ask a private follow-up without learning who sent it…"
-            />
-            <Button
-              type="button"
-              variant="outline"
-              disabled={!props.privateReply.trim() || props.pending}
-              onClick={() => props.requestClarification(selected.id)}
-            >
-              {props.pending ? 'Saving…' : 'Send privately'}
-            </Button>
-          </div>
-          <div className="assignment-row">
-            <label htmlFor="responder">Approve and assign to</label>
-            <select
-              id="responder"
-              value={props.responder}
-              onChange={(event) => props.setResponder(event.target.value)}
-            >
-              {props.responders.map((item) => (
-                <option key={item}>{item}</option>
-              ))}
-              {props.responders.length === 0 && (
-                <option value="">No responders configured</option>
-              )}
-            </select>
-          </div>
-          <footer className="decision-row">
-            <button
-              type="button"
-              className="close-action"
-              disabled={props.pending}
-              onClick={() => props.closeQuestion(selected.id)}
-            >
-              Reject or close
-            </button>
-            <Button
-              type="button"
-              disabled={!props.responder || props.pending}
-              onClick={() => props.approveAndAssign(selected.id)}
-            >
-              {props.pending ? 'Saving…' : 'Approve and assign'}
-              <ArrowRight />
-            </Button>
-          </footer>
+            <div className="record-meta">
+              <span>{questionReference(selected)}</span>
+              <span
+                className={`status status-${selected.status.toLowerCase().replaceAll(' ', '-')}`}
+              >
+                {selected.status}
+              </span>
+            </div>
+            <h2>{selected.question}</h2>
+            <blockquote>{selected.detail}</blockquote>
+            <div className="privacy-boundary">
+              <ShieldCheck />
+              <span>
+                <strong>What HR can see</strong>Question, context, activity, and
+                private thread. No email, employee ID, IP address, or device
+                details.
+              </span>
+            </div>
+            <div className="moderation-section">
+              <label htmlFor="private-reply">Need more information?</label>
+              <Textarea
+                id="private-reply"
+                value={props.privateReply}
+                onChange={(event) => props.setPrivateReply(event.target.value)}
+                placeholder="Ask a private follow-up without learning who sent it…"
+              />
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!props.privateReply.trim() || props.pending}
+                onClick={() => props.requestClarification(selected.id)}
+              >
+                {props.pending ? 'Saving…' : 'Send privately'}
+              </Button>
+            </div>
+            <div className="assignment-row">
+              <label htmlFor="responder">Approve and assign to</label>
+              <select
+                id="responder"
+                value={props.responder}
+                onChange={(event) => props.setResponder(event.target.value)}
+              >
+                {props.responders.map((item) => (
+                  <option key={item}>{item}</option>
+                ))}
+                {props.responders.length === 0 && (
+                  <option value="">No responders configured</option>
+                )}
+              </select>
+            </div>
+            <footer className="decision-row">
+              <button
+                type="button"
+                className="close-action"
+                disabled={props.pending}
+                onClick={() => props.closeQuestion(selected.id)}
+              >
+                Reject or close
+              </button>
+              <Button
+                type="button"
+                disabled={!props.responder || props.pending}
+                onClick={() => props.approveAndAssign(selected.id)}
+              >
+                {props.pending ? 'Saving…' : 'Approve and assign'}
+                <ArrowRight />
+              </Button>
+            </footer>
           </section>
         ) : (
           <section className="work-detail empty-work-state">
@@ -1196,7 +1347,8 @@ function ResponderView(props: ResponderProps) {
       question.responder === props.responderLabel,
   );
   const selected =
-    assigned.find((question) => question.id === props.selectedId) ?? assigned[0];
+    assigned.find((question) => question.id === props.selectedId) ??
+    assigned[0];
   return (
     <div className="workspace-page page-shell">
       <header className="workspace-heading">
@@ -1234,44 +1386,44 @@ function ResponderView(props: ResponderProps) {
         </aside>
         {selected ? (
           <section className="work-detail response-work">
-          <div className="record-meta">
-            <span>{questionReference(selected)}</span>
-            <span className="status status-assigned">Assigned</span>
-          </div>
-          <h2>{selected.question}</h2>
-          <blockquote>{selected.detail}</blockquote>
-          <div className="privacy-boundary">
-            <EyeOff />
-            <span>
-              <strong>Anonymous context</strong>
-              {selected.upvotes} people support this question and{' '}
-              {selected.comments} added thoughts. Their identities are not
-              available.
-            </span>
-          </div>
-          <div className="answer-editor">
-            <label htmlFor="answer">Your official answer</label>
-            <Textarea
-              id="answer"
-              value={props.answer}
-              onChange={(event) => props.setAnswer(event.target.value)}
-              placeholder="Give a direct answer. Explain the decision and what happens next…"
-            />
-          </div>
-          <footer className="decision-row">
-            <span>
-              <Send />
-              Published answers are visible to employees.
-            </span>
-            <Button
-              type="button"
-              disabled={!props.answer.trim() || props.pending}
-              onClick={() => props.publishAnswer(selected.id)}
-            >
-              {props.pending ? 'Publishing…' : 'Publish answer'}
-              <ArrowRight />
-            </Button>
-          </footer>
+            <div className="record-meta">
+              <span>{questionReference(selected)}</span>
+              <span className="status status-assigned">Assigned</span>
+            </div>
+            <h2>{selected.question}</h2>
+            <blockquote>{selected.detail}</blockquote>
+            <div className="privacy-boundary">
+              <EyeOff />
+              <span>
+                <strong>Anonymous context</strong>
+                {selected.upvotes} people support this question and{' '}
+                {selected.comments} added thoughts. Their identities are not
+                available.
+              </span>
+            </div>
+            <div className="answer-editor">
+              <label htmlFor="answer">Your official answer</label>
+              <Textarea
+                id="answer"
+                value={props.answer}
+                onChange={(event) => props.setAnswer(event.target.value)}
+                placeholder="Give a direct answer. Explain the decision and what happens next…"
+              />
+            </div>
+            <footer className="decision-row">
+              <span>
+                <Send />
+                Published answers are visible to employees.
+              </span>
+              <Button
+                type="button"
+                disabled={!props.answer.trim() || props.pending}
+                onClick={() => props.publishAnswer(selected.id)}
+              >
+                {props.pending ? 'Publishing…' : 'Publish answer'}
+                <ArrowRight />
+              </Button>
+            </footer>
           </section>
         ) : (
           <section className="work-detail empty-work-state">
