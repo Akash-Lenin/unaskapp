@@ -11,11 +11,12 @@ Project: `kykvxhbinrduankuvplm`
 - `private.question_audit_events` stores staff moderation events only. Employee submissions and votes must never be written here.
 - `private.question_votes` stores one per-question pseudonymous vote marker and direction. It stores no email or employee ID and is never exposed to browser roles.
 - `private.question_vote_baselines` preserves aggregate totals that existed before individual vote state was introduced.
+- `private.test_access_allowlist` stores approved testing emails and their app role. It is private access-control data and is not joined to questions, thoughts, or votes.
 
 ## Access rules
 
 - All four support tables have RLS enabled.
-- Only Google-authenticated sessions with an exact `@everstage.com` email may access Unask data or add published thoughts.
+- Google-authenticated sessions may enter with an exact `@everstage.com` email or an exact email in the private testing allowlist.
 - Staff access is resolved from `private.staff_roles`, with trusted `app_metadata` retained as a migration-compatible fallback.
 - HR moderation, assignment, clarification, and closure run through guarded RPCs and create private audit events.
 - Responders can publish only answers assigned to their configured responder label.
@@ -26,6 +27,7 @@ Project: `kykvxhbinrduankuvplm`
 ## Operational notes
 
 - Add staff by writing an Everstage Auth user ID and role to `private.staff_roles`. Responders also require a unique, human-readable `responder_label` that HR can assign to questions.
+- Add temporary external testers to `private.test_access_allowlist` with an exact lowercase Google email and the `employee`, `hr`, or `responder` role. Responder entries also require a unique `responder_label`.
 - Question submission, voting, and thought creation use explicitly granted RPCs. Direct inserts and updates on `public.questions` are denied to browser sessions.
 - New questions are always anonymous. The historic visibility and display-name columns remain for schema compatibility, but the submission RPC rejects named submissions.
 - Votes toggle on/off and may be changed between up and down; each employee can have at most one vote per question.

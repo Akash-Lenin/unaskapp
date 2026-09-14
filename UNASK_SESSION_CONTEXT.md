@@ -24,7 +24,7 @@ The experience demonstrates three roles:
 - **HR Admin:** reviews open questions, sees engagement signals, categorizes questions, and assigns them to an appropriate responder without access to sender identity.
 - **Responder:** sees only assigned questions and publishes official answers to the employee feed.
 
-The employee feed, anonymous question submission, and voting are connected to Supabase project `kykvxhbinrduankuvplm`. Access now requires a verified Supabase Auth session for an exact `@everstage.com` email, enforced again by database RLS. Feedback records contain no email or employee ID. The HR and responder screens remain role-preview UI until production SSO issues trusted staff claims.
+The employee feed, anonymous question submission, and voting are connected to Supabase project `kykvxhbinrduankuvplm`. Access requires a Google-authenticated Supabase Auth session for an exact `@everstage.com` email or an exact email in the private testing allowlist, enforced again by database RLS. Feedback records contain no email or employee ID.
 
 ## Current User Experience
 

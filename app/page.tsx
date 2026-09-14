@@ -119,10 +119,6 @@ function randomToken(prefix: string) {
   return `${prefix}_${crypto.randomUUID().replaceAll('-', '').slice(0, 12)}`;
 }
 
-function isEverstageEmail(value: string | undefined) {
-  return /^[^@\s]+@everstage\.com$/i.test(value ?? '');
-}
-
 function isGoogleUser(user: User) {
   const providers = Array.isArray(user.app_metadata.providers)
     ? user.app_metadata.providers
@@ -211,16 +207,23 @@ export default function HomePage() {
   const [workflowPending, setWorkflowPending] = useState(false);
 
   useEffect(() => {
-    const applyUser = (user: User | null) => {
-      if (user && isGoogleUser(user) && isEverstageEmail(user.email)) {
-        setSessionId((current) => current || randomToken('ses'));
-        setAuth('app');
-        return;
+    let active = true;
+
+    const applyUser = async (user: User | null) => {
+      if (user && isGoogleUser(user)) {
+        setAuth('checking');
+        const { data, error } = await supabase.rpc('get_staff_profile');
+        if (!active) return;
+        if (!error && data?.[0]) {
+          setSessionId((current) => current || randomToken('ses'));
+          setAuth('app');
+          return;
+        }
       }
 
       if (user) {
         setAuth('denied');
-        void supabase.auth.signOut({ scope: 'local' });
+        await supabase.auth.signOut({ scope: 'local' });
         return;
       }
 
@@ -228,16 +231,19 @@ export default function HomePage() {
     };
 
     void supabase.auth.getUser().then(({ data }) => {
-      applyUser(data.user);
+      void applyUser(data.user);
     });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      applyUser(session?.user ?? null);
+      window.setTimeout(() => void applyUser(session?.user ?? null), 0);
     });
 
-    return () => subscription.unsubscribe();
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -360,7 +366,6 @@ export default function HomePage() {
         redirectTo: window.location.origin,
         skipBrowserRedirect: true,
         queryParams: {
-          hd: 'everstage.com',
           prompt: 'select_account',
         },
       },
@@ -766,7 +771,7 @@ function AuthMock({
           </p>
         </div>
         <small>
-          Verified company access · identity is separated from feedback
+          Verified Google access · identity is separated from feedback
         </small>
       </section>
       <section className="auth-panel">
@@ -783,8 +788,8 @@ function AuthMock({
             <p className="eyebrow">Everstage access</p>
             <h2>Continue with Google</h2>
             <p>
-              Use your Everstage Google Workspace account. Personal Google
-              accounts and other company domains are refused.
+              Use your Everstage Google Workspace account or an approved test
+              account. Other Google accounts are refused.
             </p>
             <form className="auth-form" onSubmit={requestAccess}>
               {error && <p className="auth-error">{error}</p>}
@@ -795,8 +800,8 @@ function AuthMock({
             </form>
             <div className="auth-note">
               <LockKeyhole />
-              Google verifies company membership. Feedback omits your email and
-              employee ID; voting uses a one-per-question pseudonymous marker.
+              Google verifies the account. The private access list decides who
+              may enter; feedback omits email and employee ID.
             </div>
           </div>
         )}
@@ -804,11 +809,10 @@ function AuthMock({
           <div className="auth-card proof-card">
             <span className="result-icon denied">×</span>
             <p className="eyebrow">Access refused</p>
-            <h2>This workspace is for Everstage employees.</h2>
+            <h2>This account is not approved for Unask.</h2>
             <p>
-              Use an Everstage Google Workspace account ending exactly in
-              @everstage.com. No application access or feedback data was
-              granted.
+              Use an @everstage.com Google account or an approved testing
+              account. No application access or feedback data was granted.
             </p>
             <Button type="button" variant="outline" onClick={reset}>
               Try another account
@@ -881,10 +885,11 @@ function ProofStrip({
     <div className="proof-strip">
       <ShieldCheck />
       <span>
-        <strong>Verified Everstage access.</strong> Google and Supabase Auth
-        keep your email and profile for sign-in. Questions and thoughts do not
-        store your email or employee ID. Voting uses a per-question pseudonymous
-        marker, and anonymous thread recovery uses browser-held session{' '}
+        <strong>Verified Google access.</strong> Everstage accounts and approved
+        testers are checked against a private access rule. Supabase Auth keeps
+        email and profile for sign-in, but questions and thoughts do not store
+        email or employee ID. Voting uses a per-question pseudonymous marker,
+        and anonymous thread recovery uses browser-held session{' '}
         {sessionId.slice(0, 8)}••••.
       </span>
       <button type="button" onClick={close}>
