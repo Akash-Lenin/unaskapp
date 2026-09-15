@@ -933,7 +933,7 @@ export default function HomePage() {
   };
 
   const approveAndAssign = async (id: number) => {
-    if (!responder) return;
+    if (!responder || workflowPending) return;
     setWorkflowPending(true);
     const { error } = await supabase.rpc('moderate_unask_question', {
       p_question_id: id,
