@@ -1,9 +1,10 @@
 'use client';
 
-import { type SyntheticEvent, useEffect, useMemo, useState } from 'react';
+import { type ReactNode, type SyntheticEvent, useEffect, useMemo, useState } from 'react';
 import type { User } from '@supabase/supabase-js';
 import {
   ArrowRight,
+  BarChart3,
   Check,
   ChevronRight,
   CircleHelp,
@@ -13,6 +14,7 @@ import {
   MessageCircle,
   Flag,
   KeyRound,
+  Inbox,
   Search,
   Send,
   ShieldCheck,
@@ -20,6 +22,7 @@ import {
   ThumbsDown,
   ThumbsUp,
   UserRoundCheck,
+  Users,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -46,8 +49,8 @@ import {
   type RecoveryThread,
 } from '@/lib/recovery-vault';
 
-type Role = 'employee' | 'hr' | 'responder';
-type StaffRole = Exclude<Role, 'employee'> | null;
+type Role = 'employee' | 'hr' | 'responder' | 'analytics';
+type StaffRole = 'hr' | 'responder' | null;
 type Status =
   | 'Under review'
   | 'Needs clarification'
@@ -80,6 +83,18 @@ type Question = {
   myVote?: VoteDirection;
   threadKey?: string;
   persisted?: boolean;
+  moderationState?: 'active' | 'hidden' | 'deleted';
+};
+
+type Analytics = {
+  total: number;
+  answered: number;
+  pending: number;
+  average_answer_hours: number;
+  trend: Array<{ period: string; count: number }>;
+  most_liked: { id?: number; question?: string; value?: number };
+  most_disliked: { id?: number; question?: string; value?: number };
+  most_discussed: { id?: number; question?: string; value?: number };
 };
 
 const PAGE_SIZE = 20;
@@ -194,6 +209,10 @@ function rowToQuestion(row: PublicQuestionRow): Question {
     responder: row.responder_label ?? undefined,
     answer: row.answer ?? undefined,
     persisted: true,
+    moderationState:
+      'moderation_state' in row
+        ? ((row.moderation_state as Question['moderationState']) ?? 'active')
+        : 'active',
   };
 }
 
@@ -243,6 +262,10 @@ export default function HomePage() {
     Record<number, { privateReply?: string; employeeReply?: string }>
   >({});
   const [reportCounts, setReportCounts] = useState<Record<number, number>>({});
+  const [analytics, setAnalytics] = useState<Analytics | null>(null);
+  const [analyticsPeriod, setAnalyticsPeriod] = useState<'week' | 'month'>('week');
+  const [anonymityOpen, setAnonymityOpen] = useState(false);
+  const [feedCounts, setFeedCounts] = useState({ total: 0, answered: 0 });
 
   useEffect(() => {
     let active = true;
@@ -302,7 +325,9 @@ export default function HomePage() {
           : null;
       const nextResponderLabel = profile?.responder_label ?? '';
       setStaffRole(nextStaffRole);
-      setResponderLabel(nextResponderLabel);
+      setResponderLabel(
+        nextStaffRole === 'hr' ? 'People Team · HR' : nextResponderLabel,
+      );
       setRole(nextStaffRole ?? 'employee');
 
       if (nextStaffRole === 'hr') {
@@ -319,7 +344,7 @@ export default function HomePage() {
       const { data, error } = await supabase
         .from('questions')
         .select(
-          'id, question, detail, status, visibility, display_name, upvotes, dislikes, comments_count, responder_label, answer, created_at, updated_at',
+          'id, question, detail, status, visibility, display_name, upvotes, dislikes, comments_count, responder_label, answer, moderation_state, created_at, updated_at',
         )
         .order('created_at', { ascending: false })
         .range(0, PAGE_SIZE - 1);
@@ -327,6 +352,22 @@ export default function HomePage() {
         setBackendState('error');
         return;
       }
+      const [totalCountResult, answeredCountResult] = await Promise.all([
+        supabase
+          .from('questions')
+          .select('id', { count: 'exact', head: true })
+          .eq('moderation_state', 'active')
+          .in('status', ['Assigned', 'Answered']),
+        supabase
+          .from('questions')
+          .select('id', { count: 'exact', head: true })
+          .eq('moderation_state', 'active')
+          .eq('status', 'Answered'),
+      ]);
+      setFeedCounts({
+        total: totalCountResult.count ?? 0,
+        answered: answeredCountResult.count ?? 0,
+      });
 
       const { data: voteData, error: voteError } = await supabase.rpc(
         'list_my_unask_votes',
@@ -379,7 +420,7 @@ export default function HomePage() {
           const row = threadData?.[0];
           if (!row) return null;
           return {
-            ...rowToQuestion(row as PublicQuestionRow),
+            ...rowToQuestion(row as unknown as PublicQuestionRow),
             privateReply: row.private_reply ?? undefined,
             employeeReply: row.employee_reply ?? undefined,
             employeeReplyAt: row.employee_reply_at ?? undefined,
@@ -396,7 +437,7 @@ export default function HomePage() {
         ...liveQuestions.filter((question) => !recoveredIds.has(question.id)),
       ]);
       if (nextStaffRole === 'hr') {
-        const [threadResults, reportResult] = await Promise.all([
+        const [threadResults, reportResult, analyticsResult] = await Promise.all([
           Promise.all(
             liveQuestions.map(async (question) => {
               const { data: threadData } = await supabase.rpc(
@@ -407,6 +448,7 @@ export default function HomePage() {
             }),
           ),
           supabase.rpc('get_unask_report_counts'),
+          supabase.rpc('get_unask_analytics', { p_period: 'week' }),
         ]);
         setHrThreads(
           Object.fromEntries(
@@ -427,6 +469,7 @@ export default function HomePage() {
             ]),
           ),
         );
+        if (analyticsResult.data) setAnalytics(analyticsResult.data as unknown as Analytics);
       }
       setBackendState('live');
     };
@@ -511,7 +554,7 @@ export default function HomePage() {
     const { data, error } = await supabase
       .from('questions')
       .select(
-        'id, question, detail, status, visibility, display_name, upvotes, dislikes, comments_count, responder_label, answer, created_at, updated_at',
+        'id, question, detail, status, visibility, display_name, upvotes, dislikes, comments_count, responder_label, answer, moderation_state, created_at, updated_at',
       )
       .order('created_at', { ascending: false })
       .range(feedOffset, feedOffset + PAGE_SIZE - 1);
@@ -527,6 +570,18 @@ export default function HomePage() {
       const ids = new Set(current.map((question) => question.id));
       return [...current, ...next.filter((question) => !ids.has(question.id))];
     });
+  };
+
+  const loadAnalytics = async (period: 'week' | 'month') => {
+    setAnalyticsPeriod(period);
+    const { data, error } = await supabase.rpc('get_unask_analytics', {
+      p_period: period,
+    });
+    if (error || !data) {
+      notify('Analytics could not be loaded.');
+      return;
+    }
+    setAnalytics(data as unknown as Analytics);
   };
 
   const requestAccess = async (event: SyntheticEvent<HTMLFormElement>) => {
@@ -612,7 +667,7 @@ export default function HomePage() {
     }
 
     const question: Question = {
-      ...rowToQuestion(saved as PublicQuestionRow),
+      ...rowToQuestion(saved as unknown as PublicQuestionRow),
       owned: true,
       threadKey,
     };
@@ -851,6 +906,32 @@ export default function HomePage() {
     notify('Question closed privately.');
   };
 
+  const moderateQuestionVisibility = async (
+    id: number,
+    action: 'hide' | 'delete' | 'restore',
+  ) => {
+    setWorkflowPending(true);
+    const { error } = await supabase.rpc('moderate_unask_question', {
+      p_question_id: id,
+      p_action: action,
+      p_private_reply: '',
+      p_responder_label: '',
+    });
+    setWorkflowPending(false);
+    if (error) {
+      notify('The question moderation change could not be saved.');
+      return;
+    }
+    setQuestions((current) =>
+      current.map((question) =>
+        question.id === id
+          ? { ...question, moderationState: action === 'restore' ? 'active' : action === 'hide' ? 'hidden' : 'deleted' }
+          : question,
+      ),
+    );
+    notify(action === 'restore' ? 'Question restored.' : action === 'hide' ? 'Question hidden for scrutiny.' : 'Question moved to deleted review.');
+  };
+
   const approveAndAssign = async (id: number) => {
     if (!responder) return;
     setWorkflowPending(true);
@@ -877,6 +958,10 @@ export default function HomePage() {
 
   const publishAnswer = async (id: number) => {
     if (!answer.trim()) return;
+    if (questions.find((question) => question.id === id)?.owned) {
+      notify('You cannot answer a question you submitted.');
+      return;
+    }
     setWorkflowPending(true);
     const publishedAnswer = answer.trim();
     const { error } = await supabase.rpc('publish_unask_answer', {
@@ -957,6 +1042,9 @@ export default function HomePage() {
           setRecoveryOpen={setRecoveryOpen}
           restoreVault={restoreVault}
           forgetThisDevice={forgetThisDevice}
+          anonymityOpen={anonymityOpen}
+          setAnonymityOpen={setAnonymityOpen}
+          feedCounts={feedCounts}
           submitting={submitting}
         />
       )}
@@ -980,6 +1068,7 @@ export default function HomePage() {
           moderateThought={moderateThought}
           hrThreads={hrThreads}
           reportCounts={reportCounts}
+          moderateQuestionVisibility={moderateQuestionVisibility}
         />
       )}
       {role === 'responder' && (
@@ -992,6 +1081,13 @@ export default function HomePage() {
           setSelectedId={setSelectedId}
           setAnswer={setAnswer}
           publishAnswer={publishAnswer}
+        />
+      )}
+      {role === 'analytics' && staffRole === 'hr' && (
+        <AnalyticsView
+          analytics={analytics}
+          period={analyticsPeriod}
+          setPeriod={(period) => void loadAnalytics(period)}
         />
       )}
       {toast && (
@@ -1127,6 +1223,9 @@ function Header({
         </button>
       </div>
       <div className="prototype-role">
+        <span className="workspace-icon">
+          {role === 'hr' ? <ShieldCheck /> : role === 'responder' ? <Users /> : role === 'analytics' ? <BarChart3 /> : <Inbox />}
+        </span>
         <label htmlFor="workspace-role">Workspace</label>
         <select
           id="workspace-role"
@@ -1134,10 +1233,11 @@ function Header({
           onChange={(event) => setRole(event.target.value as Role)}
         >
           <option value="employee">Employee</option>
-          {staffRole === 'hr' && <option value="hr">HR Admin</option>}
-          {staffRole === 'responder' && (
+          {staffRole === 'hr' && <option value="hr">HR moderation</option>}
+          {(staffRole === 'responder' || staffRole === 'hr') && (
             <option value="responder">Responder</option>
           )}
+          {staffRole === 'hr' && <option value="analytics">Analytics</option>}
         </select>
       </div>
     </header>
@@ -1197,12 +1297,17 @@ type EmployeeProps = {
   setRecoveryOpen: (open: boolean) => void;
   restoreVault: (code: string) => Promise<void>;
   forgetThisDevice: () => void;
+  anonymityOpen: boolean;
+  setAnonymityOpen: (open: boolean) => void;
+  feedCounts: { total: number; answered: number };
   submitting: boolean;
 };
 
 function EmployeeView(props: EmployeeProps) {
   const visible = props.questions.filter(
     (question) =>
+      question.moderationState !== 'hidden' &&
+      question.moderationState !== 'deleted' &&
       (question.status === 'Assigned' ||
         question.status === 'Answered' ||
         question.owned) &&
@@ -1219,6 +1324,9 @@ function EmployeeView(props: EmployeeProps) {
             <h1>What do you want to ask?</h1>
           </div>
           <div className="ask-tools">
+            <Button type="button" variant="outline" className="anonymity-pill" onClick={() => props.setAnonymityOpen(true)}>
+              <EyeOff /> How anonymity works
+            </Button>
             <Button type="button" variant="outline" onClick={() => props.setRecoveryOpen(true)}>
               <KeyRound /> My questions
             </Button>
@@ -1261,7 +1369,7 @@ function EmployeeView(props: EmployeeProps) {
               type="submit"
               disabled={!props.draft.trim() || props.submitting}
             >
-              {props.submitting ? 'Saving…' : 'Send to HR'}
+              {props.submitting ? 'Submitting…' : 'Submit'}
               <ArrowRight />
             </Button>
           </footer>
@@ -1286,6 +1394,11 @@ function EmployeeView(props: EmployeeProps) {
               placeholder="Search questions"
             />
           </label>
+        </div>
+        <div className="feed-stats" aria-label="Question totals">
+          <span><strong>{props.feedCounts.total}</strong> Total questions</span>
+          <span><strong>{props.feedCounts.answered}</strong> Answered</span>
+          <span><strong>{Math.max(0, props.feedCounts.total - props.feedCounts.answered)}</strong> Awaiting answer</span>
         </div>
         <div className="simple-feed">
           {visible.map((question) => (
@@ -1332,7 +1445,36 @@ function EmployeeView(props: EmployeeProps) {
         restore={props.restoreVault}
         forget={props.forgetThisDevice}
       />
+      <AnonymityDialog open={props.anonymityOpen} setOpen={props.setAnonymityOpen} />
     </div>
+  );
+}
+
+function AnonymityDialog({ open, setOpen }: { open: boolean; setOpen: (open: boolean) => void }) {
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent className="anonymity-dialog">
+        <DialogHeader>
+          <DialogTitle>How Unask protects your identity</DialogTitle>
+          <DialogDescription>
+            Google sign-in checks that you are allowed into Unask. Your account
+            is not written onto your question.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="anonymity-flow">
+          <div><ShieldCheck /><strong>1. Verify access</strong><span>Google confirms you are from Everstage or an approved tester.</span></div>
+          <ArrowRight />
+          <div><EyeOff /><strong>2. Separate identity</strong><span>The question is saved without your email, name, or employee ID.</span></div>
+          <ArrowRight />
+          <div><KeyRound /><strong>3. Keep ownership private</strong><span>Your recovery code—not your login—unlocks your private question thread.</span></div>
+        </div>
+        <p className="anonymity-caveat">
+          Write carefully: details in the message itself can reveal you. During
+          this MVP, infrastructure logs may still allow timing or network
+          correlation by highly privileged platform administrators.
+        </p>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1481,8 +1623,9 @@ function QuestionRow({
   };
 
   return (
-    <article className={`question-row ${expanded ? 'expanded' : ''}`}>
-      <button type="button" className="question-main" onClick={toggle}>
+    <>
+      <article className="question-row">
+        <button type="button" className="question-main" onClick={toggle}>
         <div>
           <span
             className={`status status-${question.status.toLowerCase().replaceAll(' ', '-')}`}
@@ -1496,9 +1639,25 @@ function QuestionRow({
         <h3>{question.question}</h3>
         <p>Anonymous · {question.age}</p>
         <ChevronRight />
-      </button>
-      {expanded && (
-        <div className="question-detail">
+        </button>
+      </article>
+      <Dialog
+        open={expanded}
+        onOpenChange={(open) => {
+          if (!open && expanded) toggle();
+        }}
+      >
+        <DialogContent className="question-dialog">
+          <DialogHeader>
+            <div className="question-dialog-meta">
+              <span className={`status status-${question.status.toLowerCase().replaceAll(' ', '-')}`}>
+                {question.status}
+              </span>
+              <span>Anonymous · {question.age}</span>
+            </div>
+            <DialogTitle>{question.question}</DialogTitle>
+          </DialogHeader>
+          <div className="question-detail">
           <p>{question.detail}</p>
           {question.privateReply && (
             <div className="private-reply">
@@ -1666,9 +1825,10 @@ function QuestionRow({
               </div>
             </form>
           )}
-        </div>
-      )}
-    </article>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -1695,14 +1855,25 @@ type HrProps = {
   ) => Promise<void>;
   hrThreads: Record<number, { privateReply?: string; employeeReply?: string }>;
   reportCounts: Record<number, number>;
+  moderateQuestionVisibility: (
+    id: number,
+    action: 'hide' | 'delete' | 'restore',
+  ) => Promise<void>;
 };
 function HrView(props: HrProps) {
-  const queue = props.questions.filter(
-    (question) =>
-      question.status === 'Under review' ||
-      question.status === 'Needs clarification' ||
-      Boolean(props.reportCounts[question.id]),
+  const [section, setSection] = useState<'pending' | 'approved' | 'hidden'>('pending');
+  const pending = props.questions.filter(
+    (question) => question.moderationState !== 'hidden' && question.moderationState !== 'deleted' &&
+      (question.status === 'Under review' || question.status === 'Needs clarification' || Boolean(props.reportCounts[question.id])),
   );
+  const approved = props.questions.filter(
+    (question) => question.moderationState !== 'hidden' && question.moderationState !== 'deleted' &&
+      (question.status === 'Assigned' || question.status === 'Answered'),
+  );
+  const hidden = props.questions.filter(
+    (question) => question.moderationState === 'hidden' || question.moderationState === 'deleted' || question.status === 'Closed',
+  );
+  const queue = section === 'pending' ? pending : section === 'approved' ? approved : hidden;
   const selected =
     queue.find((question) => question.id === props.selectedId) ?? queue[0];
   const selectedThread = selected ? props.hrThreads[selected.id] : undefined;
@@ -1725,17 +1896,28 @@ function HrView(props: HrProps) {
           No sender identity
         </span>
       </header>
+      <nav className="moderation-tabs" aria-label="HR question sections">
+        <button type="button" className={section === 'pending' ? 'active' : ''} onClick={() => setSection('pending')}>
+          Waiting <span>{pending.length}</span>
+        </button>
+        <button type="button" className={section === 'approved' ? 'active' : ''} onClick={() => setSection('approved')}>
+          Approved <span>{approved.length}</span>
+        </button>
+        <button type="button" className={section === 'hidden' ? 'active' : ''} onClick={() => setSection('hidden')}>
+          Hidden & deleted <span>{hidden.length}</span>
+        </button>
+      </nav>
       <div className="work-layout">
         <aside className="work-queue">
           <header>
-            <strong>Waiting for review</strong>
+            <strong>{section === 'pending' ? 'Waiting for review' : section === 'approved' ? 'Approved questions' : 'Further scrutiny'}</strong>
             <span>{queue.length}</span>
           </header>
           {queue.map((question) => (
             <button
               type="button"
               key={question.id}
-              className={props.selectedId === question.id ? 'active' : ''}
+              className={selected?.id === question.id ? 'active' : ''}
               onClick={() => props.setSelectedId(question.id)}
             >
               <span>{questionReference(question)}</span>
@@ -1832,62 +2014,53 @@ function HrView(props: HrProps) {
                 <p>No thoughts on this question.</p>
               )}
             </div>
-            <div className="moderation-section">
-              <label htmlFor="private-reply">Need more information?</label>
-              <Textarea
-                id="private-reply"
-                value={props.privateReply}
-                onChange={(event) => props.setPrivateReply(event.target.value)}
-                placeholder="Ask a private follow-up without learning who sent it…"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                disabled={!props.privateReply.trim() || props.pending}
-                onClick={() => props.requestClarification(selected.id)}
-              >
-                {props.pending ? 'Saving…' : 'Send privately'}
-              </Button>
-            </div>
-            <div className="assignment-row">
-              <label htmlFor="responder">Approve and assign to</label>
-              <select
-                id="responder"
-                value={props.responder}
-                onChange={(event) => props.setResponder(event.target.value)}
-              >
-                {props.responders.map((item) => (
-                  <option key={item}>{item}</option>
-                ))}
-                {props.responders.length === 0 && (
-                  <option value="">No responders configured</option>
-                )}
-              </select>
-            </div>
-            <footer className="decision-row">
-              <button
-                type="button"
-                className="close-action"
-                disabled={props.pending}
-                onClick={() => props.closeQuestion(selected.id)}
-              >
-                Reject or close
-              </button>
-              <Button
-                type="button"
-                disabled={!props.responder || props.pending}
-                onClick={() => props.approveAndAssign(selected.id)}
-              >
-                {props.pending ? 'Saving…' : 'Approve and assign'}
-                <ArrowRight />
-              </Button>
-            </footer>
+            {section === 'pending' && (
+              <>
+                <div className="moderation-section">
+                  <label htmlFor="private-reply">Need more information?</label>
+                  <Textarea id="private-reply" value={props.privateReply} onChange={(event) => props.setPrivateReply(event.target.value)} placeholder="Ask a private follow-up without learning who sent it…" />
+                  <Button type="button" variant="outline" disabled={!props.privateReply.trim() || props.pending} onClick={() => props.requestClarification(selected.id)}>
+                    {props.pending ? 'Saving…' : 'Send privately'}
+                  </Button>
+                </div>
+                <div className="assignment-row">
+                  <label htmlFor="responder">Approve and assign to</label>
+                  <select id="responder" value={props.responder} onChange={(event) => props.setResponder(event.target.value)}>
+                    {props.responders.map((item) => <option key={item}>{item}</option>)}
+                    {props.responders.length === 0 && <option value="">No responders configured</option>}
+                  </select>
+                </div>
+                <footer className="decision-row">
+                  <button type="button" className="close-action" disabled={props.pending} onClick={() => props.closeQuestion(selected.id)}>Reject or close</button>
+                  <Button type="button" disabled={!props.responder || props.pending} onClick={() => props.approveAndAssign(selected.id)}>
+                    {props.pending ? 'Saving…' : 'Approve and assign'} <ArrowRight />
+                  </Button>
+                </footer>
+              </>
+            )}
+            {section === 'approved' && (
+              <footer className="decision-row moderation-actions">
+                <span>Assigned to <strong>{selected.responder ?? '—'}</strong></span>
+                <Button type="button" variant="outline" onClick={() => void props.moderateQuestionVisibility(selected.id, 'hide')}>Hide for scrutiny</Button>
+              </footer>
+            )}
+            {section === 'hidden' && (
+              <footer className="decision-row moderation-actions">
+                <span className="status">{selected.moderationState ?? selected.status}</span>
+                <div>
+                  <Button type="button" variant="outline" onClick={() => void props.moderateQuestionVisibility(selected.id, 'restore')}>Restore</Button>
+                  {selected.moderationState !== 'deleted' && (
+                    <button type="button" className="close-action" onClick={() => void props.moderateQuestionVisibility(selected.id, 'delete')}>Move to deleted</button>
+                  )}
+                </div>
+              </footer>
+            )}
           </section>
         ) : (
           <section className="work-detail empty-work-state">
             <ShieldCheck />
-            <h2>The moderation queue is clear.</h2>
-            <p>New employee questions will appear here for private review.</p>
+            <h2>Nothing in this section.</h2>
+            <p>Choose another section or wait for new activity.</p>
           </section>
         )}
       </div>
@@ -1909,7 +2082,16 @@ function ResponderView(props: ResponderProps) {
   const assigned = props.questions.filter(
     (question) =>
       question.status === 'Assigned' &&
-      question.responder === props.responderLabel,
+      question.responder === props.responderLabel &&
+      !question.owned &&
+      question.moderationState !== 'hidden' &&
+      question.moderationState !== 'deleted',
+  );
+  const ownAssigned = props.questions.filter(
+    (question) => question.status === 'Assigned' && question.responder === props.responderLabel && question.owned,
+  );
+  const answered = props.questions.filter(
+    (question) => question.status === 'Answered' && question.responder === props.responderLabel && question.moderationState !== 'hidden' && question.moderationState !== 'deleted',
   );
   const selected =
     assigned.find((question) => question.id === props.selectedId) ??
@@ -1998,6 +2180,82 @@ function ResponderView(props: ResponderProps) {
           </section>
         )}
       </div>
+      {ownAssigned.length > 0 && (
+        <div className="self-answer-warning">
+          <ShieldCheck /> {ownAssigned.length} question{ownAssigned.length === 1 ? '' : 's'} you submitted {ownAssigned.length === 1 ? 'is' : 'are'} hidden from your responder queue so you cannot answer your own question.
+        </div>
+      )}
+      <section className="answered-history">
+        <header>
+          <div><p className="eyebrow">Answer history</p><h2>Questions you answered</h2></div>
+          <span>{answered.length}</span>
+        </header>
+        {answered.length ? answered.map((question) => (
+          <article key={question.id}>
+            <span className="status status-answered">Answered</span>
+            <div><strong>{question.question}</strong><p>{question.answer}</p></div>
+          </article>
+        )) : <p className="history-empty">Published answers will appear here.</p>}
+      </section>
     </div>
+  );
+}
+
+function AnalyticsView({
+  analytics,
+  period,
+  setPeriod,
+}: {
+  analytics: Analytics | null;
+  period: 'week' | 'month';
+  setPeriod: (period: 'week' | 'month') => void;
+}) {
+  const max = Math.max(1, ...(analytics?.trend.map((item) => item.count) ?? [1]));
+  return (
+    <div className="analytics-page page-shell">
+      <header className="workspace-heading">
+        <div>
+          <p className="eyebrow">HR analytics</p>
+          <h1>Understand what needs attention.</h1>
+          <p>Aggregate operational metrics only. No sender identity is included.</p>
+        </div>
+        <div className="period-toggle">
+          <button type="button" className={period === 'week' ? 'active' : ''} onClick={() => setPeriod('week')}>Weekly</button>
+          <button type="button" className={period === 'month' ? 'active' : ''} onClick={() => setPeriod('month')}>Monthly</button>
+        </div>
+      </header>
+      <div className="metric-grid">
+        <article><span>Total questions</span><strong>{analytics?.total ?? '—'}</strong></article>
+        <article><span>Answered</span><strong>{analytics?.answered ?? '—'}</strong></article>
+        <article><span>Pending</span><strong>{analytics?.pending ?? '—'}</strong></article>
+        <article><span>Average answer time</span><strong>{analytics ? `${analytics.average_answer_hours}h` : '—'}</strong></article>
+      </div>
+      <section className="analytics-card trend-card">
+        <div><p className="eyebrow">Question volume</p><h2>{period === 'week' ? 'Weekly' : 'Monthly'} questions</h2></div>
+        <div className="trend-bars">
+          {(analytics?.trend ?? []).map((item) => (
+            <div key={item.period}>
+              <span style={{ height: `${Math.max(8, (item.count / max) * 100)}%` }} title={`${item.count} questions`} />
+              <strong>{item.count}</strong>
+              <small>{new Date(item.period).toLocaleDateString(undefined, period === 'week' ? { month: 'short', day: 'numeric' } : { month: 'short' })}</small>
+            </div>
+          ))}
+        </div>
+      </section>
+      <div className="insight-grid">
+        <InsightCard title="Most liked" item={analytics?.most_liked} icon={<ThumbsUp />} />
+        <InsightCard title="Most disliked" item={analytics?.most_disliked} icon={<ThumbsDown />} />
+        <InsightCard title="Most discussed" item={analytics?.most_discussed} icon={<MessageCircle />} />
+      </div>
+    </div>
+  );
+}
+
+function InsightCard({ title, item, icon }: { title: string; item?: Analytics['most_liked']; icon: ReactNode }) {
+  return (
+    <article className="analytics-card insight-card">
+      <div>{icon}<span>{title}</span><strong>{item?.value ?? 0}</strong></div>
+      <p>{item?.question ?? 'No question data yet.'}</p>
+    </article>
   );
 }

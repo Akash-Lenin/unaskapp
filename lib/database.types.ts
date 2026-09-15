@@ -56,6 +56,8 @@ export type Database = {
           dislikes: number;
           display_name: string | null;
           id: number;
+          moderated_at: string | null;
+          moderation_state: string;
           private_reply: string | null;
           question: string;
           responder_label: string | null;
@@ -73,6 +75,8 @@ export type Database = {
           dislikes?: number;
           display_name?: string | null;
           id?: never;
+          moderated_at?: string | null;
+          moderation_state?: string;
           private_reply?: string | null;
           question: string;
           responder_label?: string | null;
@@ -90,6 +94,8 @@ export type Database = {
           dislikes?: number;
           display_name?: string | null;
           id?: never;
+          moderated_at?: string | null;
+          moderation_state?: string;
           private_reply?: string | null;
           question?: string;
           responder_label?: string | null;
@@ -106,6 +112,10 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      get_unask_analytics: {
+        Args: { p_period?: string };
+        Returns: Json;
+      };
       get_unask_hr_thread: {
         Args: { p_question_id: number };
         Returns: {
