@@ -6,6 +6,8 @@
   },
   "deploy": {
     "startCommand": "./node_modules/.bin/vinext start",
+    "healthcheckPath": "/api/health",
+    "healthcheckTimeout": 300,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
   }

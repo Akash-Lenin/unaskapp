@@ -106,6 +106,23 @@ export type Database = {
       [_ in never]: never;
     };
     Functions: {
+      get_unask_hr_thread: {
+        Args: { p_question_id: number };
+        Returns: {
+          employee_reply: string | null;
+          employee_reply_at: string | null;
+          private_reply: string | null;
+        }[];
+      };
+      get_unask_recovery_vault: {
+        Args: { p_vault_hash: string };
+        Returns: {
+          ciphertext: string;
+          iv: string;
+          salt: string;
+          vault_version: number;
+        }[];
+      };
       get_staff_profile: {
         Args: Record<PropertyKey, never>;
         Returns: {
@@ -124,6 +141,8 @@ export type Database = {
           display_name: string | null;
           id: number;
           private_reply: string | null;
+          employee_reply: string | null;
+          employee_reply_at: string | null;
           question: string;
           responder_label: string | null;
           status: Database['public']['Enums']['question_status'];
@@ -141,6 +160,14 @@ export type Database = {
         Args: Record<PropertyKey, never>;
         Returns: { direction: string; question_id: number }[];
       };
+      get_unask_report_counts: {
+        Args: Record<PropertyKey, never>;
+        Returns: { open_reports: number; question_id: number }[];
+      };
+      moderate_unask_thought: {
+        Args: { p_action: string; p_thought_id: number };
+        Returns: undefined;
+      };
       moderate_unask_question: {
         Args: {
           p_action: string;
@@ -153,6 +180,20 @@ export type Database = {
       publish_unask_answer: {
         Args: { p_answer: string; p_question_id: number };
         Returns: undefined;
+      };
+      respond_to_unask_clarification: {
+        Args: { p_question_id: number; p_reply: string; p_thread_hash: string };
+        Returns: undefined;
+      };
+      save_unask_recovery_vault: {
+        Args: {
+          p_ciphertext: string;
+          p_expected_version?: number;
+          p_iv: string;
+          p_salt: string;
+          p_vault_hash: string;
+        };
+        Returns: { vault_version: number }[];
       };
       set_unask_vote: {
         Args: { p_direction: string; p_question_id: number };
@@ -170,6 +211,10 @@ export type Database = {
           id: number;
           question_id: number;
         }[];
+      };
+      submit_unask_report: {
+        Args: { p_reason: string; p_target_id: number; p_target_type: string };
+        Returns: undefined;
       };
       submit_unask_question: {
         Args: {

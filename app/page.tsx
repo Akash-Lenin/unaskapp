@@ -11,6 +11,8 @@ import {
   LockKeyhole,
   LogOut,
   MessageCircle,
+  Flag,
+  KeyRound,
   Search,
   Send,
   ShieldCheck,
@@ -21,8 +23,28 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import type { QuestionRow } from '@/lib/database.types';
 import { supabase } from '@/lib/supabase';
+import {
+  createRecoveryCode,
+  decryptThreads,
+  encryptThreads,
+  forgetRecoveryCode,
+  getLocalThreads,
+  getSavedRecoveryCode,
+  migrateSessionThreads,
+  recoveryVaultHash,
+  saveLocalThread,
+  saveRecoveryCode,
+  type RecoveryThread,
+} from '@/lib/recovery-vault';
 
 type Role = 'employee' | 'hr' | 'responder';
 type StaffRole = Exclude<Role, 'employee'> | null;
@@ -38,6 +60,7 @@ type Thought = {
   id: number;
   body: string;
   age: string;
+  status: 'published' | 'hidden';
 };
 type Question = {
   id: number;
@@ -51,11 +74,15 @@ type Question = {
   responder?: string;
   answer?: string;
   privateReply?: string;
+  employeeReply?: string;
+  employeeReplyAt?: string;
   owned?: boolean;
   myVote?: VoteDirection;
   threadKey?: string;
   persisted?: boolean;
 };
+
+const PAGE_SIZE = 20;
 
 type PublicQuestionRow = Omit<QuestionRow, 'private_reply' | 'thread_key'>;
 
@@ -205,6 +232,17 @@ export default function HomePage() {
   >('connecting');
   const [submitting, setSubmitting] = useState(false);
   const [workflowPending, setWorkflowPending] = useState(false);
+  const [feedOffset, setFeedOffset] = useState(0);
+  const [hasMoreQuestions, setHasMoreQuestions] = useState(false);
+  const [feedLoading, setFeedLoading] = useState(false);
+  const [recoveryCode, setRecoveryCode] = useState('');
+  const [recoveryVersion, setRecoveryVersion] = useState(0);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [recoveryPending, setRecoveryPending] = useState(false);
+  const [hrThreads, setHrThreads] = useState<
+    Record<number, { privateReply?: string; employeeReply?: string }>
+  >({});
+  const [reportCounts, setReportCounts] = useState<Record<number, number>>({});
 
   useEffect(() => {
     let active = true;
@@ -283,7 +321,8 @@ export default function HomePage() {
         .select(
           'id, question, detail, status, visibility, display_name, upvotes, dislikes, comments_count, responder_label, answer, created_at, updated_at',
         )
-        .order('created_at', { ascending: false });
+        .order('created_at', { ascending: false })
+        .range(0, PAGE_SIZE - 1);
       if (error) {
         setBackendState('error');
         return;
@@ -306,14 +345,32 @@ export default function HomePage() {
         const question = rowToQuestion(row as PublicQuestionRow);
         return { ...question, myVote: myVotes.get(question.id) };
       });
-      const threadKeys = Object.keys(sessionStorage).filter((key) =>
-        /^unask[.]thread[.]\d+$/.test(key),
-      );
+      setFeedOffset(data?.length ?? 0);
+      setHasMoreQuestions((data?.length ?? 0) === PAGE_SIZE);
+      migrateSessionThreads();
+      const savedCode = getSavedRecoveryCode();
+      setRecoveryCode(savedCode);
+      if (savedCode) {
+        try {
+          const vaultHash = await recoveryVaultHash(savedCode);
+          const { data: vaultData } = await supabase.rpc(
+            'get_unask_recovery_vault',
+            { p_vault_hash: vaultHash },
+          );
+          const vault = vaultData?.[0];
+          if (vault) {
+            const restored = await decryptThreads(savedCode, vault);
+            restored.forEach(saveLocalThread);
+            setRecoveryVersion(vault.vault_version);
+          }
+        } catch {
+          forgetRecoveryCode();
+          setRecoveryCode('');
+        }
+      }
+      const localThreads = getLocalThreads();
       const ownedQuestions = await Promise.all(
-        threadKeys.map(async (storageKey) => {
-          const id = Number(storageKey.slice('unask.thread.'.length));
-          const token = sessionStorage.getItem(storageKey);
-          if (!token || !Number.isSafeInteger(id)) return null;
+        localThreads.map(async ({ id, token }) => {
           const threadHash = await hashToken(token);
           const { data: threadData } = await supabase.rpc(
             'get_unask_question_thread',
@@ -324,6 +381,8 @@ export default function HomePage() {
           return {
             ...rowToQuestion(row as PublicQuestionRow),
             privateReply: row.private_reply ?? undefined,
+            employeeReply: row.employee_reply ?? undefined,
+            employeeReplyAt: row.employee_reply_at ?? undefined,
             owned: true,
             myVote: myVotes.get(id),
             threadKey: token,
@@ -336,6 +395,39 @@ export default function HomePage() {
         ...recovered,
         ...liveQuestions.filter((question) => !recoveredIds.has(question.id)),
       ]);
+      if (nextStaffRole === 'hr') {
+        const [threadResults, reportResult] = await Promise.all([
+          Promise.all(
+            liveQuestions.map(async (question) => {
+              const { data: threadData } = await supabase.rpc(
+                'get_unask_hr_thread',
+                { p_question_id: question.id },
+              );
+              return [question.id, threadData?.[0]] as const;
+            }),
+          ),
+          supabase.rpc('get_unask_report_counts'),
+        ]);
+        setHrThreads(
+          Object.fromEntries(
+            threadResults.map(([id, thread]) => [
+              id,
+              {
+                privateReply: thread?.private_reply ?? undefined,
+                employeeReply: thread?.employee_reply ?? undefined,
+              },
+            ]),
+          ),
+        );
+        setReportCounts(
+          Object.fromEntries(
+            (reportResult.data ?? []).map((item) => [
+              item.question_id,
+              Number(item.open_reports),
+            ]),
+          ),
+        );
+      }
       setBackendState('live');
     };
 
@@ -354,6 +446,87 @@ export default function HomePage() {
   const notify = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(''), 2600);
+  };
+
+  const saveVault = async (
+    threads: RecoveryThread[],
+    suppliedCode = recoveryCode,
+  ) => {
+    const code = suppliedCode || createRecoveryCode();
+    if (!suppliedCode) {
+      saveRecoveryCode(code);
+      setRecoveryCode(code);
+      setRecoveryVersion(0);
+    }
+    const [vaultHash, encrypted] = await Promise.all([
+      recoveryVaultHash(code),
+      encryptThreads(code, threads),
+    ]);
+    const { data, error } = await supabase.rpc('save_unask_recovery_vault', {
+      p_vault_hash: vaultHash,
+      p_ciphertext: encrypted.ciphertext,
+      p_salt: encrypted.salt,
+      p_iv: encrypted.iv,
+      p_expected_version: suppliedCode ? recoveryVersion : 0,
+    });
+    if (error) throw error;
+    setRecoveryVersion(data?.[0]?.vault_version ?? 1);
+    return code;
+  };
+
+  const restoreVault = async (code: string) => {
+    setRecoveryPending(true);
+    try {
+      const vaultHash = await recoveryVaultHash(code);
+      const { data, error } = await supabase.rpc('get_unask_recovery_vault', {
+        p_vault_hash: vaultHash,
+      });
+      const vault = data?.[0];
+      if (error || !vault) throw new Error('Recovery vault not found');
+      const threads = await decryptThreads(code, vault);
+      threads.forEach(saveLocalThread);
+      saveRecoveryCode(code);
+      setRecoveryCode(code);
+      setRecoveryVersion(vault.vault_version);
+      setRecoveryOpen(false);
+      notify(`Restored ${threads.length} anonymous question${threads.length === 1 ? '' : 's'}. Refreshing…`);
+      window.setTimeout(() => window.location.reload(), 700);
+    } catch {
+      notify('That recovery code is invalid or no vault was found.');
+    } finally {
+      setRecoveryPending(false);
+    }
+  };
+
+  const forgetThisDevice = () => {
+    forgetRecoveryCode();
+    setRecoveryCode('');
+    setRecoveryVersion(0);
+    notify('Recovery code removed from this device. Your encrypted vault remains.');
+  };
+
+  const loadMoreQuestions = async () => {
+    if (feedLoading || !hasMoreQuestions) return;
+    setFeedLoading(true);
+    const { data, error } = await supabase
+      .from('questions')
+      .select(
+        'id, question, detail, status, visibility, display_name, upvotes, dislikes, comments_count, responder_label, answer, created_at, updated_at',
+      )
+      .order('created_at', { ascending: false })
+      .range(feedOffset, feedOffset + PAGE_SIZE - 1);
+    setFeedLoading(false);
+    if (error) {
+      notify('More questions could not be loaded.');
+      return;
+    }
+    const next = (data ?? []).map((row) => rowToQuestion(row as PublicQuestionRow));
+    setFeedOffset((current) => current + next.length);
+    setHasMoreQuestions(next.length === PAGE_SIZE);
+    setQuestions((current) => {
+      const ids = new Set(current.map((question) => question.id));
+      return [...current, ...next.filter((question) => !ids.has(question.id))];
+    });
   };
 
   const requestAccess = async (event: SyntheticEvent<HTMLFormElement>) => {
@@ -422,7 +595,21 @@ export default function HomePage() {
       return;
     }
 
-    sessionStorage.setItem(`unask.thread.${saved.id}`, threadKey);
+    const newThread = { id: saved.id, token: threadKey };
+    saveLocalThread(newThread);
+    try {
+      const code = await saveVault(
+        [...getLocalThreads().filter((thread) => thread.id !== saved.id), newThread],
+      );
+      if (!recoveryCode) {
+        setRecoveryCode(code);
+        setRecoveryOpen(true);
+      }
+    } catch {
+      notify(
+        'Question saved, but cloud recovery did not sync. Keep this browser data until you retry.',
+      );
+    }
 
     const question: Question = {
       ...rowToQuestion(saved as PublicQuestionRow),
@@ -439,6 +626,70 @@ export default function HomePage() {
     notify(
       `Question ${questionReference(question)} entered the private HR queue.`,
     );
+  };
+
+  const respondToClarification = async (id: number, reply: string) => {
+    const question = questions.find((item) => item.id === id);
+    if (!question?.threadKey || !reply.trim()) return false;
+    const threadHash = await hashToken(question.threadKey);
+    const { error } = await supabase.rpc('respond_to_unask_clarification', {
+      p_question_id: id,
+      p_thread_hash: threadHash,
+      p_reply: reply.trim(),
+    });
+    if (error) {
+      notify('Your clarification could not be sent.');
+      return false;
+    }
+    setQuestions((current) =>
+      current.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              status: 'Under review',
+              employeeReply: reply.trim(),
+              employeeReplyAt: new Date().toISOString(),
+            }
+          : item,
+      ),
+    );
+    notify('Your private clarification was sent to HR.');
+    return true;
+  };
+
+  const submitReport = async (
+    targetType: 'question' | 'thought',
+    targetId: number,
+    reason: string,
+  ) => {
+    const { error } = await supabase.rpc('submit_unask_report', {
+      p_target_type: targetType,
+      p_target_id: targetId,
+      p_reason: reason.trim(),
+    });
+    if (error) {
+      notify('The report could not be submitted.');
+      return false;
+    }
+    notify('Report sent privately to HR for review.');
+    return true;
+  };
+
+  const moderateThought = async (
+    questionId: number,
+    thoughtId: number,
+    action: 'hide' | 'publish' | 'delete',
+  ) => {
+    const { error } = await supabase.rpc('moderate_unask_thought', {
+      p_thought_id: thoughtId,
+      p_action: action,
+    });
+    if (error) {
+      notify('That moderation change could not be saved.');
+      return;
+    }
+    await loadThoughts(questionId, true);
+    notify(action === 'delete' ? 'Thought permanently deleted.' : `Thought ${action === 'hide' ? 'hidden' : 'restored'}.`);
   };
 
   const vote = async (id: number, direction: VoteDirection) => {
@@ -497,14 +748,15 @@ export default function HomePage() {
     );
   };
 
-  const loadThoughts = async (questionId: number) => {
+  const loadThoughts = async (questionId: number, includeHidden = false) => {
     setThoughtsLoadingId(questionId);
-    const { data, error } = await supabase
+    let query = supabase
       .from('question_thoughts')
-      .select('id, body, created_at')
+      .select('id, body, status, created_at')
       .eq('question_id', questionId)
-      .eq('status', 'published')
       .order('created_at', { ascending: true });
+    if (!includeHidden) query = query.eq('status', 'published');
+    const { data, error } = await query;
     setThoughtsLoadingId(null);
     if (error) {
       notify('Thoughts could not be loaded. Please try again.');
@@ -514,6 +766,7 @@ export default function HomePage() {
       id: thought.id,
       body: thought.body,
       age: relativeAge(thought.created_at),
+      status: thought.status,
     }));
     setThoughtsByQuestion((current) => ({
       ...current,
@@ -671,7 +924,7 @@ export default function HomePage() {
         backendState={backendState}
       />
       {showProof && (
-        <ProofStrip sessionId={sessionId} close={() => setShowProof(false)} />
+        <ProofStrip close={() => setShowProof(false)} />
       )}
       {role === 'employee' && (
         <EmployeeView
@@ -693,6 +946,17 @@ export default function HomePage() {
           vote={vote}
           loadThoughts={loadThoughts}
           submitThought={submitThought}
+          respondToClarification={respondToClarification}
+          submitReport={submitReport}
+          loadMore={loadMoreQuestions}
+          hasMore={hasMoreQuestions}
+          feedLoading={feedLoading}
+          recoveryCode={recoveryCode}
+          recoveryOpen={recoveryOpen}
+          recoveryPending={recoveryPending}
+          setRecoveryOpen={setRecoveryOpen}
+          restoreVault={restoreVault}
+          forgetThisDevice={forgetThisDevice}
           submitting={submitting}
         />
       )}
@@ -710,6 +974,12 @@ export default function HomePage() {
           requestClarification={requestClarification}
           closeQuestion={closeQuestion}
           approveAndAssign={approveAndAssign}
+          thoughtsByQuestion={thoughtsByQuestion}
+          thoughtsLoadingId={thoughtsLoadingId}
+          loadThoughts={(id) => loadThoughts(id, true)}
+          moderateThought={moderateThought}
+          hrThreads={hrThreads}
+          reportCounts={reportCounts}
         />
       )}
       {role === 'responder' && (
@@ -874,13 +1144,7 @@ function Header({
   );
 }
 
-function ProofStrip({
-  sessionId,
-  close,
-}: {
-  sessionId: string;
-  close: () => void;
-}) {
+function ProofStrip({ close }: { close: () => void }) {
   return (
     <div className="proof-strip">
       <ShieldCheck />
@@ -889,8 +1153,8 @@ function ProofStrip({
         testers are checked against a private access rule. Supabase Auth keeps
         email and profile for sign-in, but questions and thoughts do not store
         email or employee ID. Voting uses a per-question pseudonymous marker,
-        and anonymous thread recovery uses browser-held session{' '}
-        {sessionId.slice(0, 8)}••••.
+        and anonymous question recovery uses a client-encrypted vault protected
+        by your recovery code. Google proves access; it is not the recovery key.
       </span>
       <button type="button" onClick={close}>
         Dismiss
@@ -918,6 +1182,21 @@ type EmployeeProps = {
   vote: (id: number, direction: VoteDirection) => void;
   loadThoughts: (questionId: number) => Promise<void>;
   submitThought: (questionId: number, body: string) => Promise<boolean>;
+  respondToClarification: (questionId: number, reply: string) => Promise<boolean>;
+  submitReport: (
+    targetType: 'question' | 'thought',
+    targetId: number,
+    reason: string,
+  ) => Promise<boolean>;
+  loadMore: () => Promise<void>;
+  hasMore: boolean;
+  feedLoading: boolean;
+  recoveryCode: string;
+  recoveryOpen: boolean;
+  recoveryPending: boolean;
+  setRecoveryOpen: (open: boolean) => void;
+  restoreVault: (code: string) => Promise<void>;
+  forgetThisDevice: () => void;
   submitting: boolean;
 };
 
@@ -939,12 +1218,17 @@ function EmployeeView(props: EmployeeProps) {
             <p className="eyebrow">Employee</p>
             <h1>What do you want to ask?</h1>
           </div>
-          <div className="quiet-promise">
-            <EyeOff />
-            <span>
-              <strong>Your identity is not attached.</strong> HR receives only
-              what you write below.
-            </span>
+          <div className="ask-tools">
+            <Button type="button" variant="outline" onClick={() => props.setRecoveryOpen(true)}>
+              <KeyRound /> My questions
+            </Button>
+            <div className="quiet-promise">
+              <EyeOff />
+              <span>
+                <strong>Your identity is not attached.</strong> HR receives only
+                what you write below.
+              </span>
+            </div>
           </div>
         </div>
         <form className="editor" onSubmit={props.submit}>
@@ -983,8 +1267,9 @@ function EmployeeView(props: EmployeeProps) {
           </footer>
         </form>
         <p className="editor-footnote">
-          <LockKeyhole />A private recovery key stays in this browser tab. If
-          you want to identify yourself, include your name in the message body.
+          <LockKeyhole /> Your recovery code unlocks an encrypted copy of your
+          anonymous question keys. If you want to identify yourself, include
+          your name in the message body.
         </p>
       </section>
       <section className="feed-section">
@@ -1020,11 +1305,110 @@ function EmployeeView(props: EmployeeProps) {
               votePending={props.votePendingId === question.id}
               loadThoughts={() => props.loadThoughts(question.id)}
               submitThought={(body) => props.submitThought(question.id, body)}
+              respondToClarification={(reply) =>
+                props.respondToClarification(question.id, reply)
+              }
+              submitReport={props.submitReport}
             />
           ))}
         </div>
+        {props.hasMore && (
+          <Button
+            type="button"
+            variant="outline"
+            className="load-more"
+            disabled={props.feedLoading}
+            onClick={() => void props.loadMore()}
+          >
+            {props.feedLoading ? 'Loading…' : 'Load more questions'}
+          </Button>
+        )}
       </section>
+      <RecoveryDialog
+        open={props.recoveryOpen}
+        setOpen={props.setRecoveryOpen}
+        recoveryCode={props.recoveryCode}
+        pending={props.recoveryPending}
+        restore={props.restoreVault}
+        forget={props.forgetThisDevice}
+      />
     </div>
+  );
+}
+
+function RecoveryDialog({
+  open,
+  setOpen,
+  recoveryCode,
+  pending,
+  restore,
+  forget,
+}: {
+  open: boolean;
+  setOpen: (open: boolean) => void;
+  recoveryCode: string;
+  pending: boolean;
+  restore: (code: string) => Promise<void>;
+  forget: () => void;
+}) {
+  const [input, setInput] = useState('');
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent className="recovery-dialog">
+        <DialogHeader>
+          <DialogTitle>Recover your anonymous questions</DialogTitle>
+          <DialogDescription>
+            This code, not your Google account, proves which anonymous threads
+            belong to you. Unask stores only an encrypted vault and cannot read
+            it without the code.
+          </DialogDescription>
+        </DialogHeader>
+        {recoveryCode ? (
+          <div className="recovery-current">
+            <strong>Your recovery code</strong>
+            <code>{recoveryCode}</code>
+            <p>
+              Save it in a password manager. Anyone with this code can open your
+              private question history. Losing it means the history cannot be
+              recovered on another device.
+            </p>
+            <div>
+              <Button
+                type="button"
+                onClick={() => void navigator.clipboard.writeText(recoveryCode)}
+              >
+                Copy code
+              </Button>
+              <Button type="button" variant="outline" onClick={forget}>
+                Forget this device
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="recovery-restore">
+            <label htmlFor="recovery-code">Recovery code</label>
+            <input
+              id="recovery-code"
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              placeholder="Paste your recovery code"
+              autoComplete="off"
+            />
+            <Button
+              type="button"
+              disabled={!input.trim() || pending}
+              onClick={() => void restore(input)}
+            >
+              {pending ? 'Decrypting…' : 'Restore my questions'}
+            </Button>
+            <p>
+              A new recovery code is created automatically when you submit your
+              first question on this device.
+            </p>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -1039,6 +1423,8 @@ function QuestionRow({
   votePending,
   loadThoughts,
   submitThought,
+  respondToClarification,
+  submitReport,
 }: {
   question: Question;
   expanded: boolean;
@@ -1050,9 +1436,20 @@ function QuestionRow({
   votePending: boolean;
   loadThoughts: () => Promise<void>;
   submitThought: (body: string) => Promise<boolean>;
+  respondToClarification: (reply: string) => Promise<boolean>;
+  submitReport: (
+    targetType: 'question' | 'thought',
+    targetId: number,
+    reason: string,
+  ) => Promise<boolean>;
 }) {
   const [showThoughts, setShowThoughts] = useState(false);
   const [thoughtDraft, setThoughtDraft] = useState('');
+  const [clarificationDraft, setClarificationDraft] = useState('');
+  const [reportTarget, setReportTarget] = useState<
+    { type: 'question' | 'thought'; id: number } | undefined
+  >();
+  const [reportReason, setReportReason] = useState('');
 
   const toggleThoughts = () => {
     const opening = !showThoughts;
@@ -1063,6 +1460,24 @@ function QuestionRow({
   const addThought = async (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (await submitThought(thoughtDraft)) setThoughtDraft('');
+  };
+
+  const sendClarification = async (event: SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (await respondToClarification(clarificationDraft)) {
+      setClarificationDraft('');
+    }
+  };
+
+  const sendReport = async (event: SyntheticEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (
+      reportTarget &&
+      (await submitReport(reportTarget.type, reportTarget.id, reportReason))
+    ) {
+      setReportTarget(undefined);
+      setReportReason('');
+    }
   };
 
   return (
@@ -1094,6 +1509,34 @@ function QuestionRow({
               </span>
             </div>
           )}
+          {question.owned &&
+            question.status === 'Needs clarification' &&
+            question.privateReply && (
+              <form className="clarification-composer" onSubmit={sendClarification}>
+                <label htmlFor={`clarification-${question.id}`}>
+                  Reply privately to HR
+                </label>
+                <Textarea
+                  id={`clarification-${question.id}`}
+                  value={clarificationDraft}
+                  onChange={(event) => setClarificationDraft(event.target.value)}
+                  placeholder="Add the missing context without identifying yourself…"
+                  maxLength={4000}
+                />
+                <Button type="submit" disabled={!clarificationDraft.trim()}>
+                  Send clarification <Send />
+                </Button>
+              </form>
+            )}
+          {question.employeeReply && (
+            <div className="employee-reply">
+              <MessageCircle />
+              <span>
+                <strong>Your private reply</strong>
+                {question.employeeReply}
+              </span>
+            </div>
+          )}
           {question.answer && (
             <div className="answer-block">
               <UserRoundCheck />
@@ -1119,6 +1562,14 @@ function QuestionRow({
               <ThumbsUp />
               {question.upvotes}
             </button>
+            {(question.status === 'Assigned' || question.status === 'Answered') && (
+              <button
+                type="button"
+                onClick={() => setReportTarget({ type: 'question', id: question.id })}
+              >
+                <Flag /> Report
+              </button>
+            )}
             <button
               type="button"
               disabled={
@@ -1160,7 +1611,15 @@ function QuestionRow({
                   {thoughts.map((thought) => (
                     <article key={thought.id}>
                       <p>{thought.body}</p>
-                      <span>Anonymous · {thought.age}</span>
+                      <span>
+                        Anonymous · {thought.age}
+                        <button
+                          type="button"
+                          onClick={() => setReportTarget({ type: 'thought', id: thought.id })}
+                        >
+                          Report
+                        </button>
+                      </span>
                     </article>
                   ))}
                 </div>
@@ -1187,6 +1646,26 @@ function QuestionRow({
               </form>
             </section>
           )}
+          {reportTarget && (
+            <form className="report-composer" onSubmit={sendReport}>
+              <label htmlFor={`report-${question.id}`}>Why should HR review this content?</label>
+              <Textarea
+                id={`report-${question.id}`}
+                value={reportReason}
+                onChange={(event) => setReportReason(event.target.value)}
+                placeholder="Describe the safety, privacy, or conduct concern…"
+                maxLength={1000}
+              />
+              <div>
+                <Button type="button" variant="outline" onClick={() => setReportTarget(undefined)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={reportReason.trim().length < 3}>
+                  Submit report
+                </Button>
+              </div>
+            </form>
+          )}
         </div>
       )}
     </article>
@@ -1206,15 +1685,30 @@ type HrProps = {
   requestClarification: (id: number) => void;
   closeQuestion: (id: number) => void;
   approveAndAssign: (id: number) => void;
+  thoughtsByQuestion: Record<number, Thought[]>;
+  thoughtsLoadingId: number | null;
+  loadThoughts: (id: number) => Promise<void>;
+  moderateThought: (
+    questionId: number,
+    thoughtId: number,
+    action: 'hide' | 'publish' | 'delete',
+  ) => Promise<void>;
+  hrThreads: Record<number, { privateReply?: string; employeeReply?: string }>;
+  reportCounts: Record<number, number>;
 };
 function HrView(props: HrProps) {
   const queue = props.questions.filter(
     (question) =>
       question.status === 'Under review' ||
-      question.status === 'Needs clarification',
+      question.status === 'Needs clarification' ||
+      Boolean(props.reportCounts[question.id]),
   );
   const selected =
     queue.find((question) => question.id === props.selectedId) ?? queue[0];
+  const selectedThread = selected ? props.hrThreads[selected.id] : undefined;
+  const selectedThoughts = selected
+    ? props.thoughtsByQuestion[selected.id]
+    : undefined;
   return (
     <div className="workspace-page page-shell">
       <header className="workspace-heading">
@@ -1248,6 +1742,9 @@ function HrView(props: HrProps) {
               <strong>{question.question}</strong>
               <small>
                 {question.status} · {question.age}
+                {props.reportCounts[question.id]
+                  ? ` · ${props.reportCounts[question.id]} reports`
+                  : ''}
               </small>
             </button>
           ))}
@@ -1271,6 +1768,69 @@ function HrView(props: HrProps) {
                 private thread. No email, employee ID, IP address, or device
                 details.
               </span>
+            </div>
+            {selectedThread?.employeeReply && (
+              <div className="employee-reply">
+                <MessageCircle />
+                <span>
+                  <strong>Anonymous employee clarification</strong>
+                  {selectedThread.employeeReply}
+                </span>
+              </div>
+            )}
+            {props.reportCounts[selected.id] ? (
+              <div className="report-alert">
+                <Flag />
+                <span>
+                  <strong>{props.reportCounts[selected.id]} open report{props.reportCounts[selected.id] === 1 ? '' : 's'}</strong>
+                  Review the question and thoughts for privacy, safety, or conduct concerns.
+                </span>
+              </div>
+            ) : null}
+            <div className="thought-moderation">
+              <strong>Thought moderation</strong>
+              {props.thoughtsLoadingId === selected.id ? (
+                <p>Loading thoughts…</p>
+              ) : selectedThoughts === undefined ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void props.loadThoughts(selected.id)}
+                >
+                  Load thoughts
+                </Button>
+              ) : selectedThoughts.length ? (
+                selectedThoughts.map((thought) => (
+                  <article key={thought.id} className={thought.status === 'hidden' ? 'hidden-thought' : ''}>
+                    <p>{thought.body}</p>
+                    <span>{thought.status} · {thought.age}</span>
+                    <div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void props.moderateThought(
+                          selected.id,
+                          thought.id,
+                          thought.status === 'hidden' ? 'publish' : 'hide',
+                        )}
+                      >
+                        {thought.status === 'hidden' ? 'Restore' : 'Hide'}
+                      </Button>
+                      <button
+                        type="button"
+                        className="delete-thought"
+                        onClick={() => void props.moderateThought(selected.id, thought.id, 'delete')}
+                      >
+                        Delete permanently
+                      </button>
+                    </div>
+                  </article>
+                ))
+              ) : (
+                <p>No thoughts on this question.</p>
+              )}
             </div>
             <div className="moderation-section">
               <label htmlFor="private-reply">Need more information?</label>

@@ -716,6 +716,14 @@
   font-size: 12px;
   line-height: 1.5;
 }
+.ask-tools {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+.ask-tools > [data-slot='button'] svg {
+  width: 17px;
+}
 .quiet-promise svg {
   flex: 0 0 auto;
   width: 20px;
@@ -967,6 +975,7 @@
 }
 .answer-block,
 .private-reply,
+.employee-reply,
 .privacy-boundary {
   display: grid;
   grid-template-columns: 24px 1fr;
@@ -980,6 +989,38 @@
   font-size: 13px;
   line-height: 1.6;
 }
+.employee-reply {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 14px;
+  max-width: 780px;
+  margin-top: 16px;
+  padding: 16px 18px;
+  border-radius: var(--md-shape-md);
+  background: var(--md-primary-container);
+  color: var(--md-on-primary-container);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.employee-reply svg { width: 20px; height: 20px; }
+.employee-reply strong { display: block; margin-bottom: 2px; }
+.clarification-composer,
+.report-composer {
+  display: grid;
+  gap: 10px;
+  max-width: 780px;
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--md-outline-variant);
+  border-radius: var(--md-shape-md);
+  background: var(--md-surface-container-lowest);
+}
+.clarification-composer label,
+.report-composer label { font-size: 13px; font-weight: 700; }
+.clarification-composer [data-slot='textarea'],
+.report-composer [data-slot='textarea'] { min-height: 92px; resize: vertical; }
+.clarification-composer [data-slot='button'] { justify-self: end; }
+.report-composer > div { display: flex; justify-content: flex-end; gap: 8px; }
 .private-reply {
   background: var(--md-tertiary-container);
   color: var(--md-on-tertiary-container);
@@ -1079,6 +1120,36 @@
   margin-top: 6px;
   color: var(--md-on-surface-variant);
   font-size: 11px;
+}
+.thought-list span button {
+  margin-left: 10px;
+  color: var(--md-primary);
+  font-weight: 700;
+}
+.load-more { margin: 22px auto 0; }
+
+.recovery-dialog { max-width: 560px; padding: 26px; }
+.recovery-current,
+.recovery-restore { display: grid; gap: 12px; }
+.recovery-current > strong,
+.recovery-restore label { font-size: 13px; font-weight: 700; }
+.recovery-current code {
+  padding: 14px;
+  border-radius: var(--md-shape-sm);
+  background: var(--md-surface-container-high);
+  overflow-wrap: anywhere;
+  font-size: 15px;
+  line-height: 1.6;
+}
+.recovery-current p,
+.recovery-restore p { color: var(--md-on-surface-variant); font-size: 12px; line-height: 1.55; }
+.recovery-current > div { display: flex; gap: 8px; flex-wrap: wrap; }
+.recovery-restore input {
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--md-outline);
+  border-radius: var(--md-shape-sm);
+  background: var(--md-surface-container-lowest);
 }
 .thoughts-empty {
   padding: 14px 0 2px;
@@ -1246,6 +1317,38 @@
   padding-top: 24px;
   border-top: 1px solid var(--md-outline-variant);
 }
+.report-alert {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: var(--md-shape-md);
+  background: var(--md-error-container);
+  color: var(--md-on-error-container);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.report-alert svg { width: 19px; }
+.report-alert strong { display: block; }
+.thought-moderation {
+  display: grid;
+  gap: 10px;
+  margin-top: 24px;
+  padding-top: 22px;
+  border-top: 1px solid var(--md-outline-variant);
+}
+.thought-moderation > p { color: var(--md-on-surface-variant); font-size: 13px; }
+.thought-moderation article {
+  padding: 14px;
+  border-radius: var(--md-shape-md);
+  background: var(--md-surface-container);
+}
+.thought-moderation article.hidden-thought { opacity: .65; }
+.thought-moderation article p { font-size: 13px; line-height: 1.55; }
+.thought-moderation article > span { display: block; margin-top: 6px; color: var(--md-on-surface-variant); font-size: 11px; text-transform: capitalize; }
+.thought-moderation article > div { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+.delete-thought { color: var(--md-error); font-size: 12px; font-weight: 700; }
 .moderation-section label,
 .assignment-row label,
 .answer-editor label {
@@ -1410,6 +1513,7 @@
   .quiet-promise {
     max-width: none;
   }
+  .ask-tools { width: 100%; justify-items: stretch; }
   .editor > footer {
     align-items: stretch;
     flex-direction: column;
